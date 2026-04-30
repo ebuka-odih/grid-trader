@@ -1,0 +1,167 @@
+#!/bin/bash
+# Grid Trader Supervisor Service
+# Manages the grid trader process with automatic restart on failure.
+# Uses the same singleton flock path as ./run.sh multi so only one manager can run.
+
+set -u
+
+PROJECT_DIR="/home/forge1/.hermes/projects/grid-trader"
+VENV_DIR="$PROJECT_DIR/venv"
+PYTHON="$VENV_DIR/bin/python3"
+SCRIPT="$PROJECT_DIR/multi_grid_manager.py"
+LOGFILE="$PROJECT_DIR/supervisor.log"
+PIDFILE="/tmp/grid_trader_supervisor.pid"
+LOCKFILE="/tmp/grid_trader_multi.lock"
+
+cd "$PROJECT_DIR" || { echo "Failed to change to $PROJECT_DIR"; exit 1; }
+source "$VENV_DIR/bin/activate" || { echo "Failed to activate virtual environment"; exit 1; }
+
+is_pid_running() {
+    local pid="$1"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+lock_is_held() {
+    flock -n "$LOCKFILE" true 2>/dev/null
+    local rc=$?
+    [[ $rc -ne 0 ]]
+}
+
+list_manager_pids() {
+    pgrep -f "$PROJECT_DIR/.*/python3 .*multi_grid_manager.py|$PROJECT_DIR/multi_grid_manager.py" || true
+}
+
+start() {
+    if [ -f "$PIDFILE" ] && is_pid_running "$(cat "$PIDFILE")"; then
+        echo "Grid trader supervisor is already running (PID: $(cat "$PIDFILE"))"
+        exit 1
+    fi
+
+    if lock_is_held; then
+        echo "Refusing to start: another multi-grid manager already holds $LOCKFILE"
+        echo "Existing manager PIDs: $(list_manager_pids | tr '\n' ' ')"
+        exit 1
+    fi
+
+    echo "Starting grid trader supervisor..."
+    (
+        CHILD_PID=""
+        SLEEP_PID=""
+
+        cleanup_child() {
+            if [ -n "$SLEEP_PID" ] && is_pid_running "$SLEEP_PID"; then
+                kill "$SLEEP_PID" 2>/dev/null || true
+                wait "$SLEEP_PID" 2>/dev/null || true
+                SLEEP_PID=""
+            fi
+            if [ -n "$CHILD_PID" ] && is_pid_running "$CHILD_PID"; then
+                kill "$CHILD_PID" 2>/dev/null || true
+                wait "$CHILD_PID" 2>/dev/null || true
+                CHILD_PID=""
+            fi
+        }
+
+        trap 'cleanup_child; exit 0' TERM INT
+
+        while true; do
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting grid trader (multi-grid mode with flock)..." >> "$LOGFILE"
+            flock -n "$LOCKFILE" "$PYTHON" "$SCRIPT" >> "$LOGFILE" 2>&1 &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            EXIT_CODE=$?
+            CHILD_PID=""
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Grid trader exited with code $EXIT_CODE. Restarting in 10 seconds..." >> "$LOGFILE"
+            sleep 10 &
+            SLEEP_PID=$!
+            wait "$SLEEP_PID"
+            SLEEP_PID=""
+        done
+    ) &
+
+    echo $! > "$PIDFILE"
+    echo "Grid trader supervisor started (PID: $!)"
+    echo "Log file: $LOGFILE"
+}
+
+stop() {
+    if [ ! -f "$PIDFILE" ]; then
+        echo "Grid trader supervisor is not running (no PID file)."
+        return
+    fi
+
+    PID=$(cat "$PIDFILE")
+    if is_pid_running "$PID"; then
+        echo "Stopping grid trader supervisor (PID: $PID)..."
+        kill "$PID"
+        for i in {1..10}; do
+            if ! is_pid_running "$PID"; then
+                break
+            fi
+            sleep 1
+        done
+        if is_pid_running "$PID"; then
+            echo "Grid trader supervisor did not stop gracefully, forcing..."
+            kill -9 "$PID"
+        fi
+        rm -f "$PIDFILE"
+        echo "Grid trader supervisor stopped."
+    else
+        echo "Process $PID not found, removing stale PID file."
+        rm -f "$PIDFILE"
+    fi
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && is_pid_running "$(cat "$PIDFILE")"; then
+        echo "Grid trader supervisor is running (PID: $(cat "$PIDFILE"))"
+    else
+        echo "Grid trader supervisor is not running."
+    fi
+
+    if lock_is_held; then
+        echo "Singleton lock is currently held: $LOCKFILE"
+    else
+        echo "Singleton lock is currently free: $LOCKFILE"
+    fi
+
+    MANAGERS="$(list_manager_pids | tr '\n' ' ')"
+    if [ -n "$MANAGERS" ]; then
+        echo "Active multi_grid_manager.py PIDs: $MANAGERS"
+    else
+        echo "No active multi_grid_manager.py processes found"
+    fi
+
+    if [ -f "$LOGFILE" ]; then
+        echo "Log file: $LOGFILE"
+        echo "--- Last 10 lines of log ---"
+        tail -10 "$LOGFILE"
+    fi
+}
+
+restart() {
+    stop
+    start
+}
+
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    status)
+        status
+        ;;
+    restart)
+        restart
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status|restart}"
+        echo "  start   - Start the grid trader supervisor"
+        echo "  stop    - Stop the supervisor and its tracked child"
+        echo "  status  - Show supervisor + lock + manager status"
+        echo "  restart - Restart the supervisor"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,462 @@
+{
+  "_comment": "Token profiles for cross-margin grid trading. Each token has its own trading personality.",
+  "_version": "2.0",
+  "_updated": "2026-04-26T09:26:07Z",
+  "profiles": {
+    "BTC/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 6,
+      "order_size_usdt": 15.0,
+      "target_pnl": [
+        0.3,
+        0.8
+      ],
+      "max_drawdown_pct": 2.0,
+      "grid_timeout_minutes": 60,
+      "direction_bias": "long",
+      "max_position_usdt": 100.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "ETH/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 8,
+      "order_size_usdt": 10.0,
+      "target_pnl": [
+        0.5,
+        1.2
+      ],
+      "max_drawdown_pct": 3.0,
+      "grid_timeout_minutes": 45,
+      "direction_bias": "long",
+      "max_position_usdt": 80.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "SOL/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 5.0,
+      "target_pnl": [
+        0.8,
+        2.0
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 50.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "PEPE/USDT:USDT": {
+      "_comment": "Meme coin \u2014 high leverage, small orders, aggressive targets, fast timeout",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
+      "target_pnl": [
+        1.5,
+        4.0
+      ],
+      "max_drawdown_pct": 8.0,
+      "grid_timeout_minutes": 20,
+      "direction_bias": "neutral",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "DOGE/USDT:USDT": {
+      "_comment": "OG meme \u2014 high leverage, neutral, small exposure",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
+      "target_pnl": [
+        1.0,
+        3.0
+      ],
+      "max_drawdown_pct": 7.0,
+      "grid_timeout_minutes": 20,
+      "direction_bias": "neutral",
+      "max_position_usdt": 25.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "1000PEPE/USDT:USDT": {
+      "_comment": "Same as PEPE \u2014 different listing format",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
+      "target_pnl": [
+        1.5,
+        4.0
+      ],
+      "max_drawdown_pct": 8.0,
+      "grid_timeout_minutes": 20,
+      "direction_bias": "neutral",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "XRP/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 5.0,
+      "target_pnl": [
+        0.8,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "short",
+      "max_position_usdt": 40.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "ADA/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.8,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 35.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "AVAX/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 9,
+      "order_size_usdt": 5.0,
+      "target_pnl": [
+        0.7,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 40.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "LINK/USDT:USDT": {
+      "_comment": "Disabled/blacklisted big-cap coin; scanner focuses on current market opportunities.",
+      "enabled": false,
+      "leverage": 50,
+      "num_grids": 8,
+      "order_size_usdt": 5.0,
+      "target_pnl": [
+        0.6,
+        1.2
+      ],
+      "max_drawdown_pct": 3.5,
+      "grid_timeout_minutes": 35,
+      "direction_bias": "long",
+      "max_position_usdt": 40.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "AAVE/USDT:USDT": {
+      "_comment": "DeFi blue chip \u2014 50x AGGRESSIVE TEST",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 10.0,
+      "target_pnl": [
+        0.6,
+        1.2
+      ],
+      "max_drawdown_pct": 3.5,
+      "grid_timeout_minutes": 35,
+      "direction_bias": "long",
+      "max_position_usdt": 40.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "TAO/USDT:USDT": {
+      "_comment": "AI narrative \u2014 higher risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        1.0,
+        2.5
+      ],
+      "max_drawdown_pct": 6.0,
+      "grid_timeout_minutes": 25,
+      "direction_bias": "neutral",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "HYPE/USDT:USDT": {
+      "_comment": "Volatile new listing \u2014 50x AGGRESSIVE TEST",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 10.0,
+      "target_pnl": [
+        1.2,
+        3.0
+      ],
+      "max_drawdown_pct": 7.0,
+      "grid_timeout_minutes": 25,
+      "direction_bias": "short",
+      "max_position_usdt": 100.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "ZEC/USDT:USDT": {
+      "_comment": "Privacy coin \u2014 50x AGGRESSIVE TEST",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 10.0,
+      "target_pnl": [
+        0.8,
+        2.0
+      ],
+      "max_drawdown_pct": 5.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 100.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "SUI/USDT:USDT": {
+      "_comment": "New L1 \u2014 medium risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.7,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 35.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "NEAR/USDT:USDT": {
+      "_comment": "Sharded L1 \u2014 medium risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.7,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 35.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "APT/USDT:USDT": {
+      "_comment": "Aptos L1 \u2014 medium risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.8,
+        1.8
+      ],
+      "max_drawdown_pct": 5.0,
+      "grid_timeout_minutes": 25,
+      "direction_bias": "neutral",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "ARB/USDT:USDT": {
+      "_comment": "Arbitrum L2 \u2014 medium, long bias",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.7,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "long",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "OP/USDT:USDT": {
+      "_comment": "Optimism L2 \u2014 medium risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.7,
+        1.5
+      ],
+      "max_drawdown_pct": 4.0,
+      "grid_timeout_minutes": 30,
+      "direction_bias": "neutral",
+      "max_position_usdt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    },
+    "FIL/USDT:USDT": {
+      "_comment": "Decentralized storage \u2014 medium risk, neutral",
+      "enabled": true,
+      "leverage": 50,
+      "num_grids": 8,
+      "order_size_usdt": 4.0,
+      "target_pnl": [
+        0.6,
+        1.2
+      ],
+      "max_drawdown_pct": 3.5,
+      "grid_timeout_minutes": 35,
+      "direction_bias": "neutral",
+      "max_position_uspt": 30.0,
+      "margin_type": "cross",
+      "max_wallet_exposure_pct": 2.0,
+      "max_leverage": 100
+    }
+  },
+  "portfolio": {
+    "_comment": "Cross-margin portfolio limits \u2014 all positions share one wallet",
+    "max_total_wallet_exposure_pct": 80,
+    "max_single_direction_exposure_pct": 50,
+    "correlation_groups": [
+      {
+        "name": "majors",
+        "tokens": [
+          "BTC",
+          "ETH",
+          "SOL"
+        ],
+        "max_group_exposure_pct": 35,
+        "_comment": "Big 3 tend to move together \u2014 cap combined exposure"
+      },
+      {
+        "name": "l2",
+        "tokens": [
+          "ARB",
+          "OP",
+          "NEAR",
+          "SUI",
+          "APT"
+        ],
+        "max_group_exposure_pct": 20,
+        "_comment": "L2/L1 alternatives often correlated"
+      },
+      {
+        "name": "meme",
+        "tokens": [
+          "PEPE",
+          "DOGE",
+          "1000PEPE"
+        ],
+        "max_group_exposure_pct": 15,
+        "_comment": "Meme coins pump/dump together"
+      },
+      {
+        "name": "defi",
+        "tokens": [
+          "AAVE",
+          "LINK",
+          "FIL"
+        ],
+        "max_group_exposure_pct": 15,
+        "_comment": "DeFi tokens correlated with ETH ecosystem"
+      }
+    ],
+    "reserve_pct": 20,
+    "emergency_liquidation_buffer_pct": 10,
+    "max_trade_wallet_exposure_pct": 2.0,
+    "max_leverage": 100
+  },
+  "defaults": {
+    "_comment": "Fallback for tokens not explicitly profiled \u2014 AGGRESSIVE for testing",
+    "leverage": 50,
+    "num_grids": 10,
+    "order_size_usdt": 10.0,
+    "target_pnl": [
+      2.0,
+      4.0
+    ],
+    "max_drawdown_pct": 5.0,
+    "grid_timeout_minutes": 30,
+    "direction_bias": "neutral",
+    "max_position_usdt": 500.0,
+    "margin_type": "cross",
+    "max_wallet_exposure_pct": 40.0,
+    "target_pnl_pct": [
+      2.0,
+      4.0
+    ],
+    "max_leverage": 100
+  },
+  "blacklist": [
+    "ACE",
+    "ADA",
+    "AVAX",
+    "BCH",
+    "BLUR",
+    "BNB",
+    "BTC",
+    "DOT",
+    "ETH",
+    "GALA",
+    "LINK",
+    "LTC",
+    "NIL",
+    "PEOPLE",
+    "RAVE",
+    "SOL",
+    "TON",
+    "TRX",
+    "XRP"
+  ]
+}

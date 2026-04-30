@@ -1,0 +1,1146 @@
+{
+  "mode": "running",
+  "started_at": 1777194806.3627868,
+  "wallet": {
+    "balance": 100.0047,
+    "initial_balance": 100.0,
+    "exposure_pct": 2.78,
+    "total_exposure_usdt": 2.78,
+    "position_count": 7,
+    "unrealized_pnl": 0.0109,
+    "realized_pnl": 0.0047
+  },
+  "slots": {
+    "17": {
+      "slot_id": 17,
+      "symbol": "RIVER/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 6,
+      "adjusted_leverage": 6,
+      "order_size": 0.13,
+      "adjusted_order_size": 0.13,
+      "order_size_usdt": 0.13,
+      "pnl": 0.0008,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0008,
+      "fills": 1,
+      "current_price": 6.683,
+      "duration_min": 2.5,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_RIVER_USDTUSDT_6_1777195536932859908",
+      "upper_price": 6.8289,
+      "lower_price": 6.5451,
+      "num_grids": 15,
+      "fill_log": [
+        {
+          "side": "Buy",
+          "price": 6.676,
+          "qty": 0.117,
+          "timestamp": 1777195542.2841523,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 6.5451,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 6.564,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 6.5829,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 6.6019,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 6.6208,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 5,
+          "price": 6.6397,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 6.6586,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 7,
+          "price": 6.6775,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 8,
+          "price": 6.6965,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 9,
+          "price": 6.7154,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 10,
+          "price": 6.7343,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 11,
+          "price": 6.7532,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 12,
+          "price": 6.7721,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 13,
+          "price": 6.7911,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 14,
+          "price": 6.81,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 15,
+          "price": 6.8289,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 2.08
+    },
+    "18": {
+      "slot_id": 18,
+      "symbol": "AAVE/USDT:USDT",
+      "direction": "long",
+      "leverage": 8,
+      "adjusted_leverage": 8,
+      "order_size": 0.18,
+      "adjusted_order_size": 0.18,
+      "order_size_usdt": 0.18,
+      "pnl": 0.003,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.003,
+      "fills": 4,
+      "current_price": 95.13,
+      "duration_min": 2.4,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_AAVE_USDTUSDT_95_1777195541940987435",
+      "upper_price": 95.7871,
+      "lower_price": 94.3929,
+      "num_grids": 10,
+      "fill_log": [
+        {
+          "side": "Buy",
+          "price": 95.08,
+          "qty": 0.015,
+          "timestamp": 1777195542.127623,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 95.08,
+          "qty": 0.015,
+          "timestamp": 1777195542.1277974,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 95.08,
+          "qty": 0.015,
+          "timestamp": 1777195542.1278555,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 95.08,
+          "qty": 0.015,
+          "timestamp": 1777195542.1279056,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 94.3929,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 94.5323,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 94.6717,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 94.8112,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 94.9506,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 95.2294,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 7,
+          "price": 95.3688,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 8,
+          "price": 95.5083,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 9,
+          "price": 95.6477,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 10,
+          "price": 95.7871,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 1.8
+    },
+    "19": {
+      "slot_id": 19,
+      "symbol": "ORDI/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 5,
+      "adjusted_leverage": 5,
+      "order_size": 0.13,
+      "adjusted_order_size": 0.13,
+      "order_size_usdt": 0.13,
+      "pnl": 0.0007,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0007,
+      "fills": 1,
+      "current_price": 4.777,
+      "duration_min": 2.3,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_ORDI_USDTUSDT_4_1777195546952549914",
+      "upper_price": 4.9053,
+      "lower_price": 4.6407,
+      "num_grids": 15,
+      "fill_log": [
+        {
+          "side": "Sell",
+          "price": 4.782,
+          "qty": 0.136,
+          "timestamp": 1777195672.365116,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 4.6407,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 4.6583,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 4.676,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 4.6936,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 4.7113,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 5,
+          "price": 4.7289,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 4.7465,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 7,
+          "price": 4.7642,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 8,
+          "price": 4.7818,
+          "side": "Sell",
+          "status": "rebalanced"
+        },
+        {
+          "index": 9,
+          "price": 4.7995,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 10,
+          "price": 4.8171,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 11,
+          "price": 4.8347,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 12,
+          "price": 4.8524,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 13,
+          "price": 4.87,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 14,
+          "price": 4.8877,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 15,
+          "price": 4.9053,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 2.08
+    },
+    "21": {
+      "slot_id": 21,
+      "symbol": "TRUMP/USDT:USDT",
+      "direction": "long",
+      "leverage": 6,
+      "adjusted_leverage": 6,
+      "order_size": 0.15,
+      "adjusted_order_size": 0.15,
+      "order_size_usdt": 0.15,
+      "pnl": 0.0,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0,
+      "fills": 4,
+      "current_price": 2.662,
+      "duration_min": 0.9,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_TRUMP_USDTUSDT_2_1777195632833413863",
+      "upper_price": 2.7027,
+      "lower_price": 2.6173,
+      "num_grids": 12,
+      "fill_log": [
+        {
+          "side": "Buy",
+          "price": 2.662,
+          "qty": 0.338,
+          "timestamp": 1777195633.0067928,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 2.662,
+          "qty": 0.338,
+          "timestamp": 1777195633.0070915,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 2.662,
+          "qty": 0.338,
+          "timestamp": 1777195633.007245,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 2.662,
+          "qty": 0.338,
+          "timestamp": 1777195633.0073464,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 2.6173,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 2.6244,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 2.6315,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 2.6387,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 2.6458,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 5,
+          "price": 2.6529,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 7,
+          "price": 2.6671,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 8,
+          "price": 2.6742,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 9,
+          "price": 2.6814,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 10,
+          "price": 2.6885,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 11,
+          "price": 2.6956,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 12,
+          "price": 2.7027,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 1.8
+    },
+    "22": {
+      "slot_id": 22,
+      "symbol": "WIF/USDT:USDT",
+      "direction": "short",
+      "leverage": 4,
+      "adjusted_leverage": 4,
+      "order_size": 0.18,
+      "adjusted_order_size": 0.18,
+      "order_size_usdt": 0.18,
+      "pnl": 0.0008,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0008,
+      "fills": 1,
+      "current_price": 0.17979,
+      "duration_min": 0.8,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_WIF_USDTUSDT_0_1777195637843570737",
+      "upper_price": 0.1807,
+      "lower_price": 0.1788,
+      "num_grids": 10,
+      "fill_log": [
+        {
+          "side": "Sell",
+          "price": 0.17998,
+          "qty": 4.006,
+          "timestamp": 1777195638.0179446,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 0.1788,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 0.179,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 0.1792,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 0.1794,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 0.1796,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 0.1799,
+          "side": "Sell",
+          "status": "rebalanced"
+        },
+        {
+          "index": 7,
+          "price": 0.1801,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 8,
+          "price": 0.1803,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 9,
+          "price": 0.1805,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 10,
+          "price": 0.1807,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 1.8
+    },
+    "23": {
+      "slot_id": 23,
+      "symbol": "BASED/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "adjusted_leverage": 8,
+      "order_size": 0.11,
+      "adjusted_order_size": 0.11,
+      "order_size_usdt": 0.11,
+      "pnl": 0.0013,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0013,
+      "fills": 1,
+      "current_price": 0.1307,
+      "duration_min": 0.8,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_BASED_USDTUSDT_0_1777195642854109891",
+      "upper_price": 0.1341,
+      "lower_price": 0.1269,
+      "num_grids": 18,
+      "fill_log": [
+        {
+          "side": "Sell",
+          "price": 0.1309,
+          "qty": 6.743,
+          "timestamp": 1777195677.10524,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 0.1269,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 0.1273,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 0.1277,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 0.1281,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 0.1285,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 5,
+          "price": 0.1289,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 0.1293,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 7,
+          "price": 0.1297,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 8,
+          "price": 0.1301,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 10,
+          "price": 0.1309,
+          "side": "Sell",
+          "status": "rebalanced"
+        },
+        {
+          "index": 11,
+          "price": 0.1313,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 12,
+          "price": 0.1317,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 13,
+          "price": 0.1321,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 14,
+          "price": 0.1325,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 15,
+          "price": 0.1329,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 16,
+          "price": 0.1333,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 17,
+          "price": 0.1337,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 18,
+          "price": 0.1341,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 1.98
+    },
+    "24": {
+      "slot_id": 24,
+      "symbol": "SONIC/USDT:USDT",
+      "direction": "long",
+      "leverage": 7,
+      "adjusted_leverage": 7,
+      "order_size": 0.13,
+      "adjusted_order_size": 0.13,
+      "order_size_usdt": 0.13,
+      "pnl": 0.0043,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0043,
+      "fills": 7,
+      "current_price": 0.03796,
+      "duration_min": 0.7,
+      "status": "active",
+      "close_reason": "",
+      "grid_id": "grid_SONIC_USDTUSDT_0_1777195647862377361",
+      "upper_price": 0.0392,
+      "lower_price": 0.0369,
+      "num_grids": 14,
+      "fill_log": [
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.035123,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.0353026,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.0353694,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.0354207,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.0354662,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.03794,
+          "qty": 23.935,
+          "timestamp": 1777195648.0355108,
+          "pnl": 0.0
+        },
+        {
+          "side": "Buy",
+          "price": 0.0379,
+          "qty": 23.935,
+          "timestamp": 1777195652.175526,
+          "pnl": 0.0
+        }
+      ],
+      "grid_levels": [
+        {
+          "index": 0,
+          "price": 0.0369,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 1,
+          "price": 0.0371,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 2,
+          "price": 0.0372,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 3,
+          "price": 0.0374,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 4,
+          "price": 0.0376,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 5,
+          "price": 0.0377,
+          "side": "Buy",
+          "status": "placed"
+        },
+        {
+          "index": 6,
+          "price": 0.0379,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 7,
+          "price": 0.0381,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 8,
+          "price": 0.0382,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 9,
+          "price": 0.0384,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 10,
+          "price": 0.0385,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 11,
+          "price": 0.0387,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 12,
+          "price": 0.0389,
+          "side": "Buy",
+          "status": "rebalanced"
+        },
+        {
+          "index": 13,
+          "price": 0.039,
+          "side": "Sell",
+          "status": "placed"
+        },
+        {
+          "index": 14,
+          "price": 0.0392,
+          "side": "Sell",
+          "status": "placed"
+        }
+      ],
+      "allocated_margin_usdt": 1.95
+    }
+  },
+  "completed_trades": [
+    {
+      "slot_id": 3,
+      "symbol": "RIVER/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 7,
+      "order_size": 0.12,
+      "pnl": 0.0087,
+      "fills": 2,
+      "duration_min": 2.0,
+      "close_reason": "target_hit"
+    },
+    {
+      "slot_id": 10,
+      "symbol": "CHIP/USDT:USDT",
+      "direction": "long",
+      "leverage": 5,
+      "order_size": 0.1,
+      "pnl": 0.0135,
+      "fills": 6,
+      "duration_min": 2.2,
+      "close_reason": "target_hit"
+    },
+    {
+      "slot_id": 5,
+      "symbol": "WLD/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.18,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 4.0,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 7,
+      "symbol": "SEI/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.15,
+      "pnl": 0.0012,
+      "fills": 2,
+      "duration_min": 4.0,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 15,
+      "symbol": "HYPE/USDT:USDT",
+      "direction": "short",
+      "leverage": 8,
+      "order_size": 0.18,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 3.9,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 11,
+      "symbol": "ORDI/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 6,
+      "order_size": 0.15,
+      "pnl": 0.0028,
+      "fills": 1,
+      "duration_min": 6.0,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 2,
+      "symbol": "H/USDT:USDT",
+      "direction": "short",
+      "leverage": 6,
+      "order_size": 0.17,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 9.2,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 12,
+      "symbol": "ENJ/USDT:USDT",
+      "direction": "short",
+      "leverage": 7,
+      "order_size": 0.13,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 6.6,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 14,
+      "symbol": "SIREN/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 6,
+      "order_size": 0.13,
+      "pnl": -0.0003,
+      "fills": 1,
+      "duration_min": 5.5,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 6,
+      "symbol": "SPK/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.12,
+      "pnl": 0.002,
+      "fills": 1,
+      "duration_min": 8.3,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 13,
+      "symbol": "IMX/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.13,
+      "pnl": -0.0024,
+      "fills": 2,
+      "duration_min": 6.9,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 8,
+      "symbol": "VIRTUAL/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.18,
+      "pnl": -0.0002,
+      "fills": 1,
+      "duration_min": 8.3,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 9,
+      "symbol": "RIVER/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 6,
+      "order_size": 0.13,
+      "pnl": 0.0035,
+      "fills": 2,
+      "duration_min": 7.6,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 1,
+      "symbol": "AAVE/USDT:USDT",
+      "direction": "long",
+      "leverage": 8,
+      "order_size": 0.15,
+      "pnl": -0.0016,
+      "fills": 4,
+      "duration_min": 10.4,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 4,
+      "symbol": "1000BONK/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 8,
+      "order_size": 0.15,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 9.3,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 16,
+      "symbol": "DYDX/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 7,
+      "order_size": 0.15,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 6.5,
+      "close_reason": "heartbeat_stale_price"
+    },
+    {
+      "slot_id": 20,
+      "symbol": "CHIP/USDT:USDT",
+      "direction": "neutral",
+      "leverage": 5,
+      "order_size": 0.11,
+      "pnl": 0.0,
+      "fills": 0,
+      "duration_min": 0.0,
+      "close_reason": "timeout"
+    }
+  ],
+  "heartbeat": {
+    "active": 7,
+    "stale": 0,
+    "last_run": 1777195687.867187,
+    "actions": [],
+    "price_bus_up": true,
+    "paused": false,
+    "pause_reason": null
+  },
+  "stats": {
+    "total_trades": 17,
+    "wins": 6,
+    "losses": 11,
+    "win_rate": 35.3,
+    "total_pnl": 0.0272,
+    "active_pnl": 0.0109
+  },
+  "portfolio_exposure": {
+    "total_exposure_pct": 2.78,
+    "long_exposure_pct": 2.23,
+    "short_exposure_pct": 0.18,
+    "neutral_exposure_pct": 0.37,
+    "group_exposures": {
+      "defi": 0.72
+    },
+    "free_wallet_pct": 97.22,
+    "position_count": 7
+  },
+  "current_prices": {
+    "RIVER/USDT:USDT": 6.683,
+    "AAVE/USDT:USDT": 95.13,
+    "ORDI/USDT:USDT": 4.777,
+    "TRUMP/USDT:USDT": 2.662,
+    "WIF/USDT:USDT": 0.17979,
+    "BASED/USDT:USDT": 0.1307,
+    "SONIC/USDT:USDT": 0.03796
+  },
+  "last_update": 1777195687.8682404
+}
