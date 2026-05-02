@@ -1,8 +1,10 @@
 import logging
+import time
 import unittest
 from types import SimpleNamespace
 
 from dry_run_engine import DryRunEngine, DryRunState
+from grid_core import GridPosition
 from grid_engine import GridLevel, GridState
 from heartbeat_regulator import HeartbeatRegulator
 from multi_grid_manager import MultiGridManager, LOSING_STAGNANT_TIMEOUT_SECONDS, STAGNANT_GRID_TIMEOUT_SECONDS
@@ -41,7 +43,7 @@ def status(**overrides):
 
 
 class NoNegativePositionCloseTests(unittest.TestCase):
-    def test_stagnation_never_closes_filled_negative_position(self):
+    def test_stagnation_closes_filled_negative_position_after_timeout(self):
         manager = MultiGridManager.__new__(MultiGridManager)
 
         losing_reason = manager._stagnation_close_reason(
@@ -51,7 +53,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             seconds_since_progress=max(LOSING_STAGNANT_TIMEOUT_SECONDS, STAGNANT_GRID_TIMEOUT_SECONDS) + 1,
         )
 
-        self.assertIsNone(losing_reason)
+        self.assertEqual(losing_reason, "losing_stagnant")
 
     def test_stagnation_can_close_profitable_or_empty_slots(self):
         manager = MultiGridManager.__new__(MultiGridManager)
@@ -91,7 +93,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
         self.assertTrue(decision.should_close)
         self.assertGreater(decision.net_pnl, 0)
 
-    def test_dry_run_drawdown_does_not_deactivate_losing_position(self):
+    def test_dry_run_drawdown_closes_losing_position(self):
         engine = DryRunEngine()
         grid = GridState(
             symbol="TEST/USDT:USDT",
@@ -105,64 +107,51 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             leverage=1,
             order_size_usdt=1.0,
         )
+        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0)
+        pos.update_unrealized(100.0)
         engine.state = DryRunState(
             grid=grid,
             started_at=0.0,
             current_price=100.0,
-            position_qty=1.0,
-            position_side="Buy",
-            entry_price=100.0,
+            position=pos,
             is_active=True,
         )
 
         event = engine.on_price_update(90.0)
 
-        self.assertIsNone(event)
-        self.assertTrue(engine.state.is_active)
-        self.assertLess(engine.state.unrealized_pnl, 0)
+        # Deep drawdown now triggers close via check_close_conditions
+        self.assertEqual(event, "drawdown")
+        self.assertFalse(engine.state.is_active)
+        self.assertLess(engine.state.position.unrealized_pnl, 0)
 
-    def test_dry_run_drawdown_hold_warning_is_throttled(self):
+    def test_dry_run_drawdown_closes_before_hold_warning(self):
         engine = DryRunEngine()
-        engine._drawdown_hold_alert_cooldown_seconds = 60.0
         grid = GridState(
             symbol="TEST/USDT:USDT",
             upper_price=110.0,
             lower_price=90.0,
             num_grids=2,
             grid_levels=[
-                GridLevel(index=0, price=100.0, side="Buy", qty=1.0, order_id=None, status="placed"),
+                GridLevel(index=0, price=100.0, side="Buy", qty=1.0, order_id=None, status="filled"),
                 GridLevel(index=1, price=105.0, side="Sell", qty=1.0, order_id=None, status="placed"),
             ],
             leverage=1,
             order_size_usdt=1.0,
         )
+        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0)
+        pos.update_unrealized(100.0)
         engine.state = DryRunState(
             grid=grid,
             started_at=0.0,
             current_price=100.0,
-            position_qty=1.0,
-            position_side="Buy",
-            entry_price=100.0,
+            position=pos,
             is_active=True,
         )
 
-        records = []
-        handler = logging.Handler()
-        handler.emit = records.append
-        log = logging.getLogger("dry_run_engine")
-        old_level = log.level
-        log.setLevel(logging.WARNING)
-        log.addHandler(handler)
-        try:
-            engine.on_price_update(90.0)
-            engine.on_price_update(89.0)
-        finally:
-            log.removeHandler(handler)
-            log.setLevel(old_level)
-
-        drawdown_warnings = [r for r in records if "DRAWDOWN HOLD" in r.getMessage()]
-        self.assertEqual(len(drawdown_warnings), 1)
-        self.assertTrue(engine.state.is_active)
+        # Deep drawdown now closes the position via check_close_conditions
+        event = engine.on_price_update(90.0)
+        self.assertEqual(event, "drawdown")
+        self.assertFalse(engine.state.is_active)
 
     def test_heartbeat_holds_stale_negative_position_instead_of_cancelling(self):
         manager = SimpleNamespace(slots={})
@@ -185,6 +174,36 @@ class NoNegativePositionCloseTests(unittest.TestCase):
         self.assertFalse(task.cancelled)
         self.assertNotEqual(slot.close_reason, "heartbeat_stale_price")
         self.assertIn("hold_negative_stale_grid:7:NEG/USDT:USDT", actions)
+    def test_dry_run_does_not_close_small_negative_position(self):
+        engine = DryRunEngine()
+        grid = GridState(
+            symbol="SPIKE/USDT:USDT",
+            upper_price=110.0,
+            lower_price=90.0,
+            num_grids=2,
+            grid_levels=[
+                GridLevel(index=0, price=100.0, side="Buy", qty=1.0, order_id=None, status="filled"),
+                GridLevel(index=1, price=95.0, side="Buy", qty=1.0, order_id=None, status="filled"),
+            ],
+            leverage=50,
+            order_size_usdt=1.0,
+        )
+        pos = GridPosition(side="Buy", qty=2.0, entry_price=97.5)
+        pos.update_unrealized(100.0)
+        engine.state = DryRunState(
+            grid=grid,
+            started_at=0.0,
+            current_price=100.0,
+            position=pos,
+            is_active=True,
+            filled_levels={0, 1},  # Mark both levels as already filled
+        )
+
+        # Small negative move that doesn't breach drawdown should not close
+        event = engine.on_price_update(99.5)
+
+        self.assertIsNone(event)
+        self.assertTrue(engine.state.is_active)
 
 
 if __name__ == "__main__":

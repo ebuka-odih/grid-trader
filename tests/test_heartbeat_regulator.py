@@ -125,13 +125,17 @@ class HeartbeatRegulatorTests(unittest.TestCase):
                 symbol="FAST/USDT:USDT",
                 task=task,
                 close_reason="",
+                started_at=now - 30,
                 state=SimpleNamespace(is_active=True),
+                engine=SimpleNamespace(get_status=lambda: {"fills": 0, "total_pnl": 0.0}),
             )
             manager.slots = {1: slot}
             hb = HeartbeatRegulator(
                 manager,
                 max_tick_age_seconds=90,
                 pause_seconds=45,
+                close_stale_after_seconds=-1,
+                min_stale_to_pause=1,
                 now_fn=lambda: now,
             )
 

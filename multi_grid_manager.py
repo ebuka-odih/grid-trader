@@ -6,7 +6,7 @@ Multi-Grid Manager v2 — runs up to 20 concurrent grid trades with cross-margin
 
 v2 Changes:
 
-- Shared OpenAI client (one for all TradingAgent instances)
+- RuleBasedAgent (pure logic, no LLM)
 
 - Token profiles from JSON (per-token leverage, sizing, direction bias)
 
@@ -35,9 +35,7 @@ Each grid is still an independent async task with its own:
 The manager:
 
 1. Scans market → gets top-20+ coins
-
-2. Asks LLM to pick a PORTFOLIO of coins (with token profiles as context)
-
+2. Picks coins algorithmically (scanner scores + sector diversification)
 3. Risk monitor approves/adjusts each deployment
 
 4. Deploys up to MAX_CONCURRENT_GRIDS grids concurrently
@@ -59,15 +57,15 @@ import asyncio
 import json
 
 import os
-
 import sqlite3
 import logging
 import math
 import time
+import fcntl
 
 from dataclasses import dataclass, field
 
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 
@@ -91,14 +89,12 @@ from config import (
 
     RISK_CHECK_INTERVAL_SECONDS, MAX_SAFE_LEVERAGE, MIN_SAFE_LEVERAGE, MAX_TRADE_WALLET_EXPOSURE_PCT,
     MIN_ORDER_SIZE_USDT,
-    MAX_CONCURRENT_GRIDS as CONFIG_MAX_CONCURRENT_GRIDS,
-    SCANNER_TOP_N_PORTFOLIO,
-    MIN_FREE_SLOTS_TO_SCAN as CONFIG_MIN_FREE_SLOTS_TO_SCAN,
-    MAX_DEPLOYMENTS_PER_CYCLE as CONFIG_MAX_DEPLOYMENTS_PER_CYCLE,
 
     VOLATILITY_SCALE_ENABLED, VOLATILITY_SCALE_BASE_ATR,
 
     VOLATILITY_SCALE_MIN_FACTOR, VOLATILITY_SCALE_MAX_FACTOR,
+
+    DRY_RUN,
 
 )
 
@@ -106,7 +102,8 @@ from coin_scanner import CoinScanner, CoinScore
 
 from dry_run_engine import DryRunEngine, DryRunState
 
-from trading_agent import TradingAgent, PreTradeDecision, MidTradeDecision, create_shared_client
+from trading_agent import PreTradeDecision, MidTradeDecision
+from rule_agent import RuleBasedAgent
 
 from portfolio_risk_monitor import PortfolioRiskMonitor
 
@@ -123,7 +120,6 @@ from improvement_loop import ImprovementLoop
 from telegram_alerter import TelegramAlerter
 
 from grid_engine import GridEngine
-from trade_close_optimizer import TradeCloseOptimizer, GridStatus
 
 
 
@@ -153,7 +149,7 @@ logger = logging.getLogger("multi_grid_manager")
 
 
 
-MAX_CONCURRENT_GRIDS = CONFIG_MAX_CONCURRENT_GRIDS
+from config import MAX_CONCURRENT_GRIDS
 
 MID_TRADE_CHECK_INTERVAL = 120
 
@@ -163,25 +159,22 @@ STATUS_BROADCAST_INTERVAL = 60
 
 HEARTBEAT_INTERVAL_SECONDS = 15
 
-HEARTBEAT_MAX_TICK_AGE_SECONDS = 90
+HEARTBEAT_MAX_TICK_AGE_SECONDS = 300
 
-HEARTBEAT_DEPLOY_PAUSE_SECONDS = 30
+HEARTBEAT_DEPLOY_PAUSE_SECONDS = 10
 
-SCANNER_TOP_N = SCANNER_TOP_N_PORTFOLIO
+SCANNER_TOP_N = 30
 
-MIN_FREE_SLOTS_TO_SCAN = CONFIG_MIN_FREE_SLOTS_TO_SCAN
-MAX_DEPLOYMENTS_PER_CYCLE = CONFIG_MAX_DEPLOYMENTS_PER_CYCLE
+MIN_FREE_SLOTS_TO_SCAN = 3
 
 NEW_GRID_DEPLOY_DELAY = 5
 
 MAX_GRIDS_PER_SYMBOL = int(os.getenv("MAX_GRIDS_PER_SYMBOL", "1"))
-USE_LLM_BRAIN = os.getenv("USE_LLM_BRAIN", "false").strip().lower() in {"1", "true", "yes", "on"}
 MIN_INTERNAL_GRID_LEVELS = int(os.getenv("MIN_INTERNAL_GRID_LEVELS", "10"))
 MAX_INTERNAL_GRID_LEVELS = int(os.getenv("MAX_INTERNAL_GRID_LEVELS", "20"))
 MIN_DEPLOY_LEVERAGE = int(os.getenv("MIN_DEPLOY_LEVERAGE", str(MIN_SAFE_LEVERAGE)))
 MAX_DEPLOY_LEVERAGE = int(os.getenv("MAX_DEPLOY_LEVERAGE", str(MAX_SAFE_LEVERAGE)))
 MAX_TRADE_MARGIN_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", str(MAX_TRADE_WALLET_EXPOSURE_PCT)))
-TARGET_WALLET_EXPOSURE_PCT = float(os.getenv("TARGET_WALLET_EXPOSURE_PCT", "80"))
 MIN_GRID_ORDER_SIZE_USDT = float(os.getenv("MIN_ORDER_SIZE_USDT", str(MIN_ORDER_SIZE_USDT)))
 
 # Slot hygiene: free dead slots instead of letting stale/no-trade tokens sit for hours.
@@ -220,190 +213,6 @@ def normalize_grid_density(
     return normalized
 
 
-def determine_deployment_pick_count(
-    free_slots: int,
-    available_count: int,
-    max_deployments_per_cycle: int = MAX_DEPLOYMENTS_PER_CYCLE,
-    current_total_exposure_pct: float | None = None,
-    target_wallet_exposure_pct: float | None = None,
-    per_grid_exposure_pct: float | None = None,
-) -> int:
-    """Decide how many fresh grids to attempt in one deployment cycle.
-
-    When exposure inputs are provided, the pick count is driven by remaining
-    wallet capacity. Example: with 1.2% exposure, 80% target, and ~2% per grid,
-    the bot should try to add about 40 grids, bounded by free slots, scanner
-    candidates, and the per-cycle cap.
-    """
-    free_slots = max(0, int(free_slots))
-    available_count = max(0, int(available_count))
-    base_limit = min(free_slots, available_count)
-    if max_deployments_per_cycle > 0:
-        base_limit = min(base_limit, int(max_deployments_per_cycle))
-
-    if (
-        current_total_exposure_pct is None
-        or target_wallet_exposure_pct is None
-        or per_grid_exposure_pct is None
-        or per_grid_exposure_pct <= 0
-    ):
-        return base_limit
-
-    remaining_exposure = max(0.0, float(target_wallet_exposure_pct) - max(0.0, float(current_total_exposure_pct)))
-    if remaining_exposure <= 0:
-        return 0
-
-    exposure_needed_slots = int(math.ceil(remaining_exposure / float(per_grid_exposure_pct)))
-    return min(base_limit, max(0, exposure_needed_slots))
-
-
-def determine_capacity_aware_trade_budget_pct(
-    max_total_wallet_exposure_pct: float,
-    current_total_exposure_pct: float,
-    active_slots: int,
-    max_grids: int,
-) -> float:
-    """Spread remaining wallet exposure budget across remaining grid capacity."""
-    total_cap = max(0.0, float(max_total_wallet_exposure_pct))
-    current_exposure = max(0.0, float(current_total_exposure_pct))
-    remaining_budget = max(0.0, total_cap - current_exposure)
-    remaining_slots = max(1, int(max_grids) - max(0, int(active_slots)))
-    return round(remaining_budget / remaining_slots, 4)
-
-
-def build_algorithmic_fallback_decision(
-    coin_score: CoinScore,
-    token_profile: dict | None = None,
-    wallet_balance: float | None = None,
-    max_trade_exposure_pct: float = MAX_TRADE_MARGIN_PCT,
-) -> PreTradeDecision:
-    """Create a deterministic scanner-based fallback decision that passes supervision more often."""
-    token_profile = token_profile or {}
-    min_confidence = float(token_profile.get("min_confidence", DecisionSupervisor.DEFAULT_MIN_CONFIDENCE))
-    min_width_pct = float(token_profile.get("min_grid_width_pct", DecisionSupervisor.DEFAULT_MIN_GRID_WIDTH_PCT))
-    max_width_pct = float(token_profile.get("max_grid_width_pct", DecisionSupervisor.DEFAULT_MAX_GRID_WIDTH_PCT))
-    safe_max_width_pct = max(min_width_pct, max_width_pct * 0.95)
-    requested_width_pct = max(min_width_pct, min(coin_score.range_pct / 2.0, safe_max_width_pct))
-    half_width = coin_score.price * (requested_width_pct / 100.0) / 2.0
-    lower = max(0.0, coin_score.price - half_width)
-    upper = coin_score.price + half_width
-
-    requested_grids = token_profile.get("num_grids", coin_score.suggested_grids)
-    normalized_grids = normalize_grid_density(
-        requested_grids,
-        wallet_balance=wallet_balance,
-        max_trade_exposure_pct=max_trade_exposure_pct,
-    )
-
-    direction = str(token_profile.get("direction_bias", "neutral") or "neutral")
-    if direction not in DecisionSupervisor.VALID_DIRECTIONS:
-        direction = "neutral"
-
-    leverage = max(
-        MIN_DEPLOY_LEVERAGE,
-        min(
-            MAX_DEPLOY_LEVERAGE,
-            int(token_profile.get("leverage", coin_score.suggested_leverage or DEFAULT_LEVERAGE)),
-        ),
-    )
-
-    confidence = min(0.95, max(min_confidence + 0.05, float(getattr(coin_score, "grid_score", min_confidence))))
-
-    return PreTradeDecision(
-        symbol=coin_score.symbol,
-        direction=direction,
-        confidence=confidence,
-        upper=upper,
-        lower=lower,
-        num_grids=normalized_grids,
-        leverage=leverage,
-        reasoning="Algorithmic scanner fallback with supervisor-safe confidence/range",
-        market_regime="ranging",
-        narrative="LLM output unavailable or invalid; falling back to scanner-ranked market-neutral deployment.",
-    )
-
-
-def symbol_has_bad_historical_expectancy(history: dict | None) -> bool:
-    """Return True when closed-trade history says a symbol should cool down.
-
-    We require at least 3 closed trades so a single unlucky close does not ban a
-    token, then block negative-average symbols with weak win rate.
-    """
-    history = history or {}
-    try:
-        closed_trades = int(history.get("closed_trades") or history.get("trades") or 0)
-        avg_pnl = float(history.get("avg_pnl") or 0.0)
-        win_rate = float(history.get("win_rate") or 0.0)
-    except (TypeError, ValueError):
-        return False
-    return closed_trades >= 3 and avg_pnl < 0 and win_rate < 35.0
-
-
-def build_filter_decisions(
-    available: list[CoinScore],
-    num_to_pick: int,
-    get_token_profile,
-    wallet_balance: float | None = None,
-    max_trade_exposure_pct: float = MAX_TRADE_MARGIN_PCT,
-    symbol_performance: dict[str, dict] | None = None,
-) -> list[PreTradeDecision]:
-    """Deterministic scan → select decisions that replace the LLM brain.
-
-    This filter keeps the fast multi-coin behavior but removes external LLM
-    uncertainty. It favors liquid ranging coins with enough movement to scalp,
-    rejects one-way/too-wild candidates, and emits supervisor-compatible grid
-    decisions sized for small wallets.
-    """
-    ranked: list[tuple[float, CoinScore]] = []
-    for coin_score in available:
-        atr_pct = float(getattr(coin_score, "atr_pct", 0.0) or 0.0)
-        range_pct = float(getattr(coin_score, "range_pct", 0.0) or 0.0)
-        mean_reversion = float(getattr(coin_score, "mean_reversion_score", 0.0) or 0.0)
-        grid_score = float(getattr(coin_score, "grid_score", 0.0) or 0.0)
-        volume = float(getattr(coin_score, "volume_24h_usdt", 0.0) or 0.0)
-
-        if grid_score < 0.45:
-            continue
-        if mean_reversion < 0.30:
-            continue
-        if atr_pct <= 0 or atr_pct > 5.0:
-            continue
-        if range_pct < 1.0 or range_pct > 18.0:
-            continue
-
-        history = (symbol_performance or {}).get(coin_score.symbol) or {}
-        # Do not keep redeploying coins that have enough evidence of negative
-        # expectancy. This avoids filling all slots with tokens that mostly
-        # close from stale/no-fill/drawdown events.
-        if symbol_has_bad_historical_expectancy(history):
-            continue
-
-        liquidity_bonus = min(0.15, volume / 100_000_000 * 0.05)
-        volatility_fit = max(0.0, 1.0 - abs(atr_pct - 1.25) / 4.0)
-        selection_score = (grid_score * 0.55) + (mean_reversion * 0.25) + (volatility_fit * 0.15) + liquidity_bonus
-        ranked.append((selection_score, coin_score))
-
-    ranked.sort(key=lambda item: item[0], reverse=True)
-
-    picks: list[PreTradeDecision] = []
-    for _, coin_score in ranked[: max(0, int(num_to_pick))]:
-        profile = get_token_profile(coin_score.symbol) if get_token_profile else {}
-        decision = build_algorithmic_fallback_decision(
-            coin_score,
-            token_profile=profile,
-            wallet_balance=wallet_balance,
-            max_trade_exposure_pct=max_trade_exposure_pct,
-        )
-        decision.reasoning = (
-            "Deterministic scanner/filter selection: liquid ranging market, "
-            f"score={coin_score.grid_score:.2f}, atr={coin_score.atr_pct:.2f}%, "
-            f"mean_reversion={coin_score.mean_reversion_score:.2f}"
-        )
-        decision.narrative = "LLM brain disabled; scan-select-execute filter selected this grid."
-        picks.append(decision)
-    return picks
-
-
 def symbol_grid_count(active_symbols, symbol: str) -> int:
     """Count active grids for one symbol."""
     return sum(1 for active_symbol in active_symbols if active_symbol == symbol)
@@ -433,7 +242,7 @@ class GridSlot:
 
     engine: DryRunEngine
 
-    agent: Optional[TradingAgent]
+    agent: RuleBasedAgent
 
     decision: PreTradeDecision
 
@@ -469,7 +278,7 @@ class GridSlot:
 
 def coin_score_to_dict(coin: CoinScore) -> dict:
 
-    """Convert CoinScore to a dict the LLM can reason about."""
+    """Convert CoinScore to a dict for logging/display."""
 
     return {
 
@@ -500,6 +309,47 @@ def coin_score_to_dict(coin: CoinScore) -> dict:
         "suggested_leverage": max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(coin.suggested_leverage))),
 
     }
+
+
+# ── Sector Classification for Diversification ───────────────
+
+_SECTOR_MAP: dict[str, str] = {
+    # L1
+    "SUI": "L1", "APT": "L1", "AVAX": "L1", "NEAR": "L1", "FTM": "L1",
+    "MATIC": "L1", "POL": "L1", "TON": "L1", "SEI": "L1", "TIA": "L1",
+    "DOT": "L1", "ATOM": "L1", "ALGO": "L1", "ICP": "L1", "MINA": "L1",
+    # L2
+    "ARB": "L2", "OP": "L2", "STRK": "L2", "ZK": "L2", "MANTA": "L2",
+    "BASE": "L2", "IMX": "L2",
+    # DeFi
+    "AAVE": "DeFi", "UNI": "DeFi", "LINK": "DeFi", "MKR": "DeFi",
+    "CRV": "DeFi", "SNX": "DeFi", "COMP": "DeFi", "SUSHI": "DeFi",
+    "DYDX": "DeFi", "PENDLE": "DeFi", "JUP": "DeFi", "RAY": "DeFi",
+    "ONDO": "DeFi", "MORPHO": "DeFi", "EIGEN": "DeFi",
+    # Meme
+    "DOGE": "Meme", "SHIB": "Meme", "PEPE": "Meme", "WIF": "Meme",
+    "FLOKI": "Meme", "BONK": "Meme", "BRETT": "Meme", "TURBO": "Meme",
+    "MOG": "Meme", "PONKE": "Meme", "NEIRO": "Meme", "GIGA": "Meme",
+    "FARTCOIN": "Meme", "MEGA": "Meme", "POPCAT": "Meme", "CAT": "Meme",
+    # AI
+    "FET": "AI", "RENDER": "AI", "TAO": "AI", "WLD": "AI",
+    "ARKM": "AI", "AI16Z": "AI", "AIXBT": "AI", "VIRTUAL": "AI",
+    "AIGENSYN": "AI", "GRASS": "AI", "ZEREBRO": "AI",
+    # Gaming
+    "AXS": "Gaming", "GALA": "Gaming", "IMX": "Gaming",
+    "BEAM": "Gaming", "RON": "Gaming", "YGG": "Gaming",
+    # RWA / TradFi
+    "RWA": "RWA", "ONDO": "RWA", "POLYX": "RWA", "CFG": "RWA",
+    # Infrastructure
+    "FIL": "Infra", "AR": "Infra", "STORJ": "Infra", "THETA": "Infra",
+    # DePIN
+    "HNT": "DePIN", "IOTX": "DePIN", "AKT": "DePIN",
+}
+
+def _get_sector(symbol: str) -> str:
+    """Classify a symbol into a sector. Unknown tokens get 'Other'."""
+    base = symbol.replace("/USDT:USDT", "").replace("/USDT", "").upper()
+    return _SECTOR_MAP.get(base, "Other")
 
 
 
@@ -622,16 +472,7 @@ class MultiGridManager:
 
 
 
-        # LLM brain is disabled by default. The production path is now
-        # deterministic scan → select → execute → monitor → close.
-        self.shared_client = create_shared_client() if USE_LLM_BRAIN else None
-        self.close_optimizer = TradeCloseOptimizer(
-            target_pnl_pct_low=TARGET_PNL_PCT_LOW,
-            target_pnl_pct_high=TARGET_PNL_PCT_HIGH,
-            max_drawdown_pct=MAX_DRAWDOWN_PCT,
-            min_net_profit_usdt=float(os.getenv("MIN_NET_PROFIT_USDT", "0.02")),
-            fee_buffer_multiplier=float(os.getenv("FEE_BUFFER_MULTIPLIER", "1.5")),
-        )
+        # v2: No LLM client needed — using RuleBasedAgent
 
 
 
@@ -641,7 +482,7 @@ class MultiGridManager:
 
         self.grid_calc = GridEngine()
 
-        self.journal = ImprovementLoop(db_path="sqlite:///multi_grid_trades.db")
+        self.journal = ImprovementLoop(db_path=f"sqlite:///{os.getenv('GRID_TRADER_DB_FILE', 'multi_grid_trades.db')}")
 
         self.alerter = TelegramAlerter()
         # HeartbeatRegulator looks for a manager._push_api_state callable.
@@ -658,6 +499,11 @@ class MultiGridManager:
         self.decision_supervisor = DecisionSupervisor()
 
         self.price_bus = PriceBus(ws_url=BYBIT_WS_PUBLIC)
+        
+        # v4: Live trading — execution WebSocket for fill notifications
+        self._live_engines: Dict[str, Any] = {}  # symbol -> LiveEngine
+        self._execution_ws = None
+        self._execution_task = None
 
         self.heartbeat = HeartbeatRegulator(
 
@@ -680,11 +526,15 @@ class MultiGridManager:
         self.slots: dict[int, GridSlot] = {}
 
         self._slot_counter = 0
+        self._run_id = f"{os.getpid()}-{int(time.time() * 1000)}"
 
         self._running = False
         self._started_at: Optional[float] = None
         self._deployment_paused_until = 0.0
-        self._pause_reason: Optional[str] = None
+
+        # Track recently-rejected symbols to avoid re-picking them every cycle
+        self._recently_rejected: dict[str, float] = {}  # symbol -> rejection timestamp
+        self._rejection_cooldown = 300  # 5 minutes before retrying a rejected symbol
 
         self._broadcaster_task: Optional[asyncio.Task] = None
 
@@ -705,7 +555,6 @@ class MultiGridManager:
         self._losses = 0
 
         self._completed_trades: list[dict] = []
-        self._scanner_candidates: list[str] = []
 
 
 
@@ -777,7 +626,18 @@ class MultiGridManager:
         self._started_at = time.time()
         _push_api_state(self)
 
+        # Handle SIGTERM for graceful shutdown (supervisor sends SIGTERM)
+        import signal
+        def _sigterm_handler(signum, frame):
+            logger.info("🛑 SIGTERM received — initiating graceful shutdown")
+            self._running = False
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
         await self.price_bus.start()
+        
+        # v4: Start execution WebSocket for live trading
+        if not DRY_RUN:
+            await self._start_execution_ws()
 
 
 
@@ -823,11 +683,99 @@ class MultiGridManager:
 
 
 
+    async def _start_execution_ws(self):
+        """Start WebSocket for execution (fill) updates."""
+        import websockets
+        import json
+        from config import BYBIT_WS_PRIVATE
+        
+        ws_url = BYBIT_WS_PRIVATE
+        
+        async def _execution_loop():
+            """Connect to Bybit private WS and listen for executions."""
+            while self._running:
+                try:
+                    async with websockets.connect(ws_url) as ws:
+                        # Authenticate
+                        from config import BYBIT_API_KEY, BYBIT_API_SECRET
+                        import hmac
+                        import hashlib
+                        import time as _time
+                        
+                        expires = int(_time.time() * 1000) + 10000
+                        signature = hmac.new(
+                            BYBIT_API_SECRET.encode(),
+                            f"GET/realtime{expires}".encode(),
+                            hashlib.sha256
+                        ).hexdigest()
+                        
+                        auth_msg = {
+                            "op": "auth",
+                            "args": [BYBIT_API_KEY, expires, signature]
+                        }
+                        await ws.send(json.dumps(auth_msg))
+                        
+                        # Subscribe to execution
+                        sub_msg = {"op": "subscribe", "args": ["execution"]}
+                        await ws.send(json.dumps(sub_msg))
+                        
+                        logger.info("🔴 Execution WebSocket connected")
+                        
+                        async for message in ws:
+                            try:
+                                data = json.loads(message)
+                                if data.get("topic") == "execution":
+                                    for exec_data in data.get("data", []):
+                                        await self._handle_execution(exec_data)
+                            except Exception as e:
+                                logger.error(f"Execution WS message error: {e}")
+                
+                except Exception as e:
+                    logger.error(f"Execution WS connection error: {e}")
+                    await asyncio.sleep(5)
+        
+        self._execution_task = asyncio.create_task(_execution_loop())
+    
+    async def _handle_execution(self, exec_data: dict):
+        """Handle execution update from WebSocket."""
+        symbol = exec_data.get("symbol", "")
+        order_id = exec_data.get("orderLinkId", "")
+        side = exec_data.get("side", "")
+        qty = float(exec_data.get("execQty", 0))
+        price = float(exec_data.get("execPrice", 0))
+        exec_type = exec_data.get("execType", "")
+        
+        if exec_type not in ("Trade", "Funding"):
+            return
+        
+        # Find matching LiveEngine
+        engine = self._live_engines.get(symbol)
+        if engine and hasattr(engine, 'notify_fill'):
+            engine.notify_fill(order_id, side, qty, price)
+            logger.info(f"🔴 Execution routed: {symbol} {side} {qty} @ {price}")
+    
+    def register_live_engine(self, symbol: str, engine):
+        """Register a LiveEngine for execution routing."""
+        self._live_engines[symbol] = engine
+        logger.info(f"🔴 LiveEngine registered for {symbol}")
+    
+    def unregister_live_engine(self, symbol: str):
+        """Unregister a LiveEngine."""
+        self._live_engines.pop(symbol, None)
+    
     async def close(self):
 
         """Shut down all grids gracefully."""
 
         self._running = False
+        
+        # v4: Stop execution WebSocket
+        if self._execution_task and not self._execution_task.done():
+            self._execution_task.cancel()
+            try:
+                await self._execution_task
+            except asyncio.CancelledError:
+                pass
 
         for task in [getattr(self, "_broadcaster_task", None), getattr(self, "_risk_monitor_task", None), getattr(self, "_heartbeat_task", None)]:
 
@@ -842,6 +790,40 @@ class MultiGridManager:
                 except asyncio.CancelledError:
 
                     pass
+
+        # Record PnL for all active grids before cancelling tasks
+        for slot_id, slot in list(self.slots.items()):
+            try:
+                status = slot.engine.get_status() if hasattr(slot.engine, 'get_status') else {}
+                total_pnl = status.get("total_pnl", 0)
+                realized = status.get("realized_pnl", 0)
+                unrealized = status.get("unrealized_pnl", 0)
+                fills = status.get("fills", 0)
+                duration = time.time() - slot.started_at
+
+                self.journal.record_cycle_close(
+                    grid_id=slot.state.grid.grid_id,
+                    total_pnl=total_pnl,
+                    realized_pnl=realized,
+                    unrealized_pnl=unrealized,
+                    fills=fills,
+                    duration=duration,
+                    close_reason="manager_shutdown",
+                    wallet_balance=self.wallet_tracker.get_wallet_state().get("balance", 0.0),
+                    wallet_exposure_pct=self.wallet_tracker.get_wallet_state().get("exposure_pct", 0.0),
+                    direction=slot.decision.direction,
+                    adjusted_leverage=slot.adjusted_leverage,
+                    adjusted_order_size=slot.adjusted_order_size,
+                )
+                self._total_trades += 1
+                self._total_pnl += total_pnl
+                if total_pnl > 0:
+                    self._wins += 1
+                else:
+                    self._losses += 1
+                logger.info(f"📝 Shutdown PnL saved: {slot.symbol} | pnl=${total_pnl:.4f} | fills={fills}")
+            except Exception as e:
+                logger.error(f"Failed to save shutdown PnL for slot {slot_id}: {e}")
 
         for slot_id, slot in list(self.slots.items()):
 
@@ -858,10 +840,14 @@ class MultiGridManager:
                     pass
 
         await self.price_bus.stop()
+        
+        # v4: Close all live engines
+        for engine in self._live_engines.values():
+            if hasattr(engine, 'close'):
+                await engine.close()
+        self._live_engines.clear()
 
         await self.scanner.close()
-
-        summary = self._get_portfolio_summary()
 
         wallet_state = self.wallet_tracker.get_wallet_state()
 
@@ -871,13 +857,13 @@ class MultiGridManager:
 
             f"🛑 Multi-Grid Manager v2 stopped | "
 
-            f"wallet=${wallet_state['balance']:.2f} | "
+            f"wallet=${wallet_state.get('balance', 0):.2f} | "
 
-            f"pnl={wallet_stats['pnl_pct']:.1f}% | "
+            f"pnl={wallet_stats.get('pnl_pct', 0):.1f}% | "
 
-            f"trades={wallet_stats['total_trades']} | "
+            f"trades={wallet_stats.get('total_trades', 0)} | "
 
-            f"win_rate={wallet_stats['win_rate']:.0f}%"
+            f"win_rate={wallet_stats.get('win_rate', 0):.0f}%"
 
         )
 
@@ -903,76 +889,21 @@ class MultiGridManager:
 
 
 
-async def _run_emergency_checks(self):
-    """Check for emergency conditions and act on them."""
-    wallet_state = self.wallet_tracker.get_wallet_state()
-    exposure_pct = wallet_state.get("exposure_pct", 0)
-    max_total = self.risk_monitor.portfolio_config.get("max_total_wallet_exposure_pct", 80)
-    buffer = self.risk_monitor.portfolio_config.get("emergency_liquidation_buffer_pct", 10)
-    
-    actions = []
-    if exposure_pct > max_total - buffer:
-        actions.append({
-            "action": "emergency_warning",
-            "message": f"Exposure {exposure_pct:.1f}% > {max_total - buffer}%",
-            "exposure": exposure_pct
-        })
+    async def _run_emergency_checks(self):
 
+        """Check for emergency conditions and act on them."""
 
-        for action in actions:
+        wallet_balance = self.wallet_tracker.get_balance()
 
-            if action["action"] == "close" and action.get("slot_id") in self.slots:
-
-                slot = self.slots[action["slot_id"]]
-
-                logger.warning(
-
-                    f"🚨 RISK MONITOR: Closing grid #{action['slot_id']} {action['symbol']} | "
-
-                    f"reason: {action['reason']} | urgency: {action['urgency']}"
-
-                )
-
-                # Cancel the grid's task — it will be caught in _monitor_grid
-
-                if slot.task and not slot.task.done():
-
-                    slot.task.cancel()
-
-
-
-                # Telegram alert
-
-                try:
-
-                    await self.alerter.send_message(
-
-                        f"🚨 EMERGENCY CLOSE: {action['symbol']} | {action['reason']} | urgency={action['urgency']}"
-
-                    )
-
-                except Exception:
-
-                    pass
-
-
-
-            elif action["action"] == "reduce" and action.get("slot_id") in self.slots:
-
-                slot = self.slots[action["slot_id"]]
-
-                logger.warning(
-
-                    f"⚠️ RISK MONITOR: Reducing position #{action['slot_id']} {action['symbol']} | "
-
-                    f"reason: {action['reason']}"
-
-                )
-
-
+        emergency = self.risk_monitor.check_emergency(wallet_balance, self.slots)
+        if isinstance(emergency, dict) and emergency.get("emergency"):
+            logger.warning(f"🚨 RISK MONITOR: {emergency.get('message', 'emergency exposure condition')}")
+            try:
+                await self.alerter.send_message(f"🚨 RISK MONITOR: {emergency.get('message')}")
+            except Exception:
+                pass
 
         # Also update wallet tracker with current state
-
         self._update_wallet_tracker()
 
 
@@ -1040,7 +971,6 @@ async def _run_emergency_checks(self):
         # Scan market
 
         scores = await self.scanner.scan()
-        self._scanner_candidates = [s.symbol for s in scores[:SCANNER_TOP_N]] if scores else []
 
         if not scores:
 
@@ -1050,9 +980,17 @@ async def _run_emergency_checks(self):
 
 
 
-        # Filter via risk monitor (blacklist check)
+        # Filter via risk monitor (blacklist check) and recently-rejected cooldown
 
         active_symbols = [slot.symbol for slot in self.slots.values()]
+
+        now_ts = time.time()
+
+        # Expire old rejection entries
+        self._recently_rejected = {
+            sym: ts for sym, ts in self._recently_rejected.items()
+            if now_ts - ts < self._rejection_cooldown
+        }
 
         available = [
 
@@ -1061,6 +999,8 @@ async def _run_emergency_checks(self):
             if symbol_has_grid_capacity(active_symbols, s.symbol)
 
             and not self.risk_monitor.is_blacklisted(s.symbol)
+
+            and s.symbol not in self._recently_rejected
 
         ]
 
@@ -1074,120 +1014,31 @@ async def _run_emergency_checks(self):
 
 
 
-        # Historical expectancy is a ranking/safety signal, but it must not keep
-        # the portfolio under-deployed. When wallet exposure is already near the
-        # configured target, block historically bad symbols. When exposure is far
-        # below target, keep them available so the bot can reach 70–80% wallet
-        # usage with more independent grid opportunities.
-        symbol_performance = _load_symbol_performance()
-        predeploy_wallet_state = self.wallet_tracker.get_wallet_state()
-        current_exposure_pct = float(predeploy_wallet_state.get("exposure_pct", 0.0) or 0.0)
-        target_exposure_pct = min(
-            float(self.risk_monitor.portfolio_config.get("max_total_wallet_exposure_pct", MAX_TOTAL_WALLET_EXPOSURE_PCT)),
-            TARGET_WALLET_EXPOSURE_PCT,
-        )
-        if current_exposure_pct >= target_exposure_pct * 0.90:
-            available = [
-                s for s in available
-                if not symbol_has_bad_historical_expectancy(symbol_performance.get(s.symbol))
-            ]
-            if not available:
-                logger.info("📊 All remaining candidates are blocked by negative historical expectancy")
-                return
-        else:
-            logger.info(
-                "📈 Exposure %.1f%% is below target %.1f%%; historical losers are penalized, not hard-blocked",
-                current_exposure_pct,
-                target_exposure_pct,
-            )
+        # Pick coins algorithmically using scanner scores + diversification
 
-        # Prepare top coins for the agent to pick a PORTFOLIO
+        num_to_pick = min(free_slots, len(available), 10)
 
-        # v2: Include token profile context in the coin data
-
-        top_coins = []
-
-        for s in available[:SCANNER_TOP_N]:
-
-            coin_dict = coin_score_to_dict(s)
-
-            profile = self.risk_monitor.get_token_profile(s.symbol)
-
-            coin_dict["profile"] = {
-
-                "leverage": max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(profile.get("leverage", DEFAULT_LEVERAGE)))),
-
-                "order_size_usdt": profile.get("order_size_usdt", 5.0),
-
-                "direction_bias": profile.get("direction_bias", "neutral"),
-
-                "max_wallet_exposure_pct": min(float(profile.get("max_wallet_exposure_pct", MAX_TRADE_MARGIN_PCT)), MAX_TRADE_MARGIN_PCT),
-
-            }
-
-            top_coins.append(coin_dict)
-
-
-
-        # Ask LLM to pick multiple coins (portfolio selection)
-
-        num_to_pick = determine_deployment_pick_count(
-            free_slots=free_slots,
-            available_count=len(available),
-            max_deployments_per_cycle=MAX_DEPLOYMENTS_PER_CYCLE,
-            current_total_exposure_pct=current_exposure_pct,
-            target_wallet_exposure_pct=target_exposure_pct,
-            per_grid_exposure_pct=MAX_TRADE_MARGIN_PCT,
-        )
-        logger.info(
-            "📈 Exposure-driven deployment target | exposure=%.1f%% target=%.1f%% per_grid<=%.1f%% pick=%s available=%s free=%s",
-            current_exposure_pct,
-            target_exposure_pct,
-            MAX_TRADE_MARGIN_PCT,
-            num_to_pick,
-            len(available),
-            free_slots,
-        )
-        # Deterministic filter selects the deployment portfolio by default.
-        # The old LLM picker can be re-enabled explicitly with USE_LLM_BRAIN=true.
-        filter_picks = build_filter_decisions(
-            available=available,
-            num_to_pick=num_to_pick,
-            get_token_profile=self.risk_monitor.get_token_profile,
-            wallet_balance=self.wallet_tracker.get_balance(),
-            max_trade_exposure_pct=MAX_TRADE_MARGIN_PCT,
-            symbol_performance=symbol_performance,
-        )
-        llm_picks = self._agent_pick_portfolio(top_coins, num_to_pick) if USE_LLM_BRAIN else []
-
-        fallback_pool = [
-            build_algorithmic_fallback_decision(
-                s,
-                token_profile=self.risk_monitor.get_token_profile(s.symbol),
-                wallet_balance=self.wallet_tracker.get_balance(),
-                max_trade_exposure_pct=MAX_TRADE_MARGIN_PCT,
-            )
-            for s in available
-        ]
-
-        if not filter_picks and not llm_picks:
-            logger.warning("🧠 Filter found no deployment candidates, using algorithmic fallback queue")
-
-        queued_decisions: list[PreTradeDecision] = []
-        seen_symbols: set[str] = set()
-        for decision in [*filter_picks, *(llm_picks or []), *fallback_pool]:
-            if decision.symbol in seen_symbols:
-                continue
-            seen_symbols.add(decision.symbol)
-            queued_decisions.append(decision)
-
-        # Deploy each pick sequentially, recalculating exposure after every success.
         wallet_balance = self.wallet_tracker.get_balance()
-        deployed_this_cycle = 0
 
-        for decision in queued_decisions:
+        picks = self._select_coins_algorithmically(available[:SCANNER_TOP_N], num_to_pick, wallet_balance)
 
-            if len(self.slots) >= self.max_grids or deployed_this_cycle >= num_to_pick:
+        if not picks:
+
+            logger.warning("📊 Algorithmic selector returned no picks")
+
+            return
+
+
+
+        # Deploy each pick as a concurrent grid
+
+        wallet_balance = self.wallet_tracker.get_balance()
+
+
+
+        for decision in picks:
+
+            if len(self.slots) >= self.max_grids:
 
                 break
 
@@ -1256,6 +1107,8 @@ async def _run_emergency_checks(self):
 
                 )
 
+                self._recently_rejected[decision.symbol] = time.time()
+
                 continue
 
             for warning in review.warnings:
@@ -1264,63 +1117,64 @@ async def _run_emergency_checks(self):
 
 
 
-            # v2: Risk check — approve or adjust the deployment.
-            # Recalculate budget before each sequential dispatch so we keep filling
-            # capacity until the configured wallet exposure limit is reached.
-            wallet_state = self.wallet_tracker.get_wallet_state()
-            wallet_balance = wallet_state.get("balance", wallet_balance)
-            dynamic_trade_budget_pct = determine_capacity_aware_trade_budget_pct(
-                max_total_wallet_exposure_pct=self.risk_monitor.portfolio_config.get(
-                    "max_total_wallet_exposure_pct",
-                    MAX_TOTAL_WALLET_EXPOSURE_PCT,
-                ),
-                current_total_exposure_pct=wallet_state.get("exposure_pct", 0.0),
-                active_slots=len(self.slots),
-                max_grids=self.max_grids,
-            )
-            effective_trade_budget_pct = min(
-                float(token_profile.get("max_wallet_exposure_pct", MAX_TRADE_MARGIN_PCT)),
-                MAX_TRADE_MARGIN_PCT,
-                dynamic_trade_budget_pct,
-            )
-
-            if effective_trade_budget_pct <= 0:
-                logger.info("🛡️ Exposure budget exhausted for this cycle; stopping sequential dispatch")
-                break
-
-            decision.num_grids = normalize_grid_density(
-                decision.num_grids,
-                wallet_balance=wallet_balance,
-                max_trade_exposure_pct=effective_trade_budget_pct,
-            )
+            # v2: Risk check — approve or adjust the deployment
 
             risk_result = self.risk_monitor.check_deploy(
+
                 symbol=decision.symbol,
+
                 direction=decision.direction,
+
                 leverage=decision.leverage,
+
                 order_size_usdt=token_profile.get("order_size_usdt", BASE_ORDER_SIZE_USDT),
+
                 wallet_balance=wallet_balance,
+
                 active_grids=self.slots,
                 num_grids=decision.num_grids,
-                max_trade_pct_override=effective_trade_budget_pct,
+
             )
 
+
+
             if not risk_result["approved"]:
+
                 logger.warning(f"🛡️ {decision.symbol} REJECTED by risk monitor: {risk_result['reasons']}")
+
+                self._recently_rejected[decision.symbol] = time.time()
+
                 continue
 
+
+
             # Apply risk-adjusted params
+
             decision.leverage = risk_result["adjusted_leverage"]
+
             adjusted_order_size = risk_result["adjusted_order_size"]
 
+
+
             # v2: Volatility-scaled sizing
+
             adjusted_order_size = calculate_volatility_scaled_size(
+
                 base_size=adjusted_order_size,
+
                 atr_pct=coin_score.atr_pct,
+
                 wallet_balance=wallet_balance,
-                max_wallet_exposure_pct=effective_trade_budget_pct,
+
+                max_wallet_exposure_pct=min(
+                    float(token_profile.get("max_wallet_exposure_pct", MAX_TRADE_MARGIN_PCT)),
+                    MAX_TRADE_MARGIN_PCT,
+                ),
+
                 leverage=decision.leverage,
+
                 num_grids=decision.num_grids,
+
             )
 
 
@@ -1351,7 +1205,6 @@ async def _run_emergency_checks(self):
 
             )
 
-            deployed_this_cycle += 1
             active_symbols.append(decision.symbol)
 
 
@@ -1362,219 +1215,106 @@ async def _run_emergency_checks(self):
 
 
 
-    def _agent_pick_portfolio(self, top_coins: list[dict], num_picks: int) -> list[PreTradeDecision]:
-
+    def _select_coins_algorithmically(self, available: list[CoinScore], num_picks: int, wallet_balance: float) -> list[PreTradeDecision]:
         """
-
-        Ask the LLM to pick MULTIPLE coins for concurrent grid trading.
-
-        v2: Uses shared client, includes token profile context.
-
+        Select coins algorithmically using scanner scores + diversification.
+        No LLM involved — pure rule-based selection with sector diversification.
         """
-
-        # Create a temporary agent with shared client for portfolio selection
-
-        portfolio_agent = TradingAgent(client=self.shared_client)
-
-
-
-        system_prompt = f"""You are an expert crypto grid trading agent managing a PORTFOLIO of concurrent grid trades in CROSS-MARGIN mode. You can run up to {self.max_grids} grids simultaneously.
-
-
-
-CROSS-MARGIN RULES:
-
-- All positions share one wallet — correlated positions increase risk
-
-- Diversify across sectors to avoid cascade liquidation
-
-- Respect direction_bias in each coin's profile (if it says "long", lean long)
-
-- Respect leverage and order_size from profiles only after applying safety caps
-- HARD RISK LIMIT: use high-frequency leverage from {MIN_DEPLOY_LEVERAGE}x to {MAX_DEPLOY_LEVERAGE}x; keep wallet risk controlled by margin size, not by low leverage
-- HARD RISK LIMIT: each new grid trade may reserve at most {MAX_TRADE_MARGIN_PCT:.1f}% of wallet margin total across all grid levels
-
-
-
-Your job: Pick {num_picks} DIFFERENT coins for grid trading right now. Diversify across:
-
-- Different sectors (L1, DeFi, Meme, AI, etc.)
-
-- Different volatility profiles (mix of conservative and aggressive)
-
-- Different directions (some long, some short, some neutral)
-
-- Avoid picking multiple coins from the same correlation group
-
-
-
-For each coin, decide: direction, grid range, number of internal grid levels, and leverage.
-Use exchange-style dense grids: exactly ONE active grid engine per symbol, with {MIN_INTERNAL_GRID_LEVELS}-{MAX_INTERNAL_GRID_LEVELS} internal limit levels inside its upper/lower range.
-
-Use the profile suggestions as a guide but you can deviate if market conditions warrant it.
-
-
-
-You must respond with valid JSON only. Format:
-
-{{
-
-  "picks": [
-
-    {{
-
-      "symbol": "COIN/USDT:USDT",
-
-      "direction": "long|short|neutral",
-
-      "confidence": 0.0-1.0,
-
-      "upper": float,
-
-      "lower": float,
-
-      "num_grids": int,
-
-      "leverage": int,
-
-      "reasoning": "brief explanation",
-
-      "market_regime": "trending_up|trending_down|ranging|volatile",
-
-      "narrative": "1-sentence market context"
-
-    }}
-
-  ],
-
-  "portfolio_strategy": "brief explanation of overall portfolio approach"
-
-}}
-
-
-
-Rules:
-
-- Pick exactly {num_picks} coins (or fewer if not enough good options)
-
-- Each coin MUST be from the provided list
-
-- Do NOT pick the same coin twice
-- Do NOT pick a coin that is already active; existing active symbols already have their one dense grid engine
-- leverage MUST be an integer from {MIN_DEPLOY_LEVERAGE} to {MAX_DEPLOY_LEVERAGE}; prefer high leverage for fast scalping while keeping total grid margin under the 2% wallet cap
-- num_grids MUST be an integer from {MIN_INTERNAL_GRID_LEVELS} to {MAX_INTERNAL_GRID_LEVELS}; prefer 10 for small wallet/min order safety, 15–20 only when range and 2% margin budget support it
-
-- Diversify: don't pick 5 coins from the same sector
-
-- Consider correlations: avoid picking 5 coins that all move together
-
-- Higher confidence = stronger conviction
-
-- Target PnL per grid: {TARGET_PNL_PCT_LOW}-{TARGET_PNL_PCT_HIGH}% of active filled margin (not static dollars)
-
-- Max drawdown: {MAX_DRAWDOWN_PCT}%
-
-- Wallet balance: ${self.wallet_tracker.get_balance():.2f}"""
-
-
-
-        wallet_state = self.wallet_tracker.get_wallet_state()
-
-        user_prompt = f"""Currently active grids: {len(self.slots)}/{self.max_grids}
-
-Free slots available: {self.max_grids - len(self.slots)}
-
-Wallet: balance=${wallet_state['balance']:.2f} | exposure={wallet_state['exposure_pct']:.1f}% | free={wallet_state['free_pct']:.1f}%
-
-
-
-Top coins from scanner (ranked by algorithmic score, with token profiles):
-
-{json.dumps(top_coins, indent=2)}
-
-
-
-Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
-
-
-
-        raw = portfolio_agent._call_llm(system_prompt, user_prompt, max_tokens=800)
-
-        if not raw:
-
+        if not available or num_picks <= 0:
             return []
 
+        # Score each coin: base grid_score + volume bonus + diversification potential
+        scored: list[tuple[float, CoinScore, str]] = []
+        for coin in available:
+            sector = _get_sector(coin.symbol)
+            # Base score from scanner (range + ATR + volume + mean reversion)
+            base = coin.grid_score
+            # Volume bonus: higher volume = more liquid = better for grids
+            vol_bonus = min(0.05, coin.volume_24h_usdt / 2e9)  # cap at 0.05
+            # Mean reversion bonus: critical for grid success
+            mr_bonus = coin.mean_reversion_score * 0.05
+            # Penalize extreme volatility slightly
+            vol_penalty = 0.0
+            if coin.atr_pct > 3.0:
+                vol_penalty = (coin.atr_pct - 3.0) * 0.02
 
+            final_score = base + vol_bonus + mr_bonus - vol_penalty
+            scored.append((final_score, coin, sector))
 
-        parsed = portfolio_agent._parse_json(raw)
+        # Sort by score descending
+        scored.sort(key=lambda x: x[0], reverse=True)
 
-        if not parsed or "picks" not in parsed:
+        # Greedy diversification: pick top coins but limit per sector
+        # Allow max 2 coins from the same sector (or 40% of picks, whichever is larger)
+        max_per_sector = max(2, int(num_picks * 0.4))
+        sector_counts: dict[str, int] = {}
+        picks: list[PreTradeDecision] = []
 
-            logger.warning(f"🤖 Portfolio pick failed to parse: {raw[:200]}")
+        for score, coin, sector in scored:
+            if len(picks) >= num_picks:
+                break
 
-            return []
-
-
-
-        picks = []
-
-        for p in parsed["picks"]:
-
-            try:
-
-                decision = PreTradeDecision(
-
-                    symbol=p["symbol"],
-
-                    direction=p.get("direction", "neutral"),
-
-                    confidence=float(p.get("confidence", 0.5)),
-
-                    upper=float(p["upper"]),
-
-                    lower=float(p["lower"]),
-
-                    num_grids=normalize_grid_density(int(p["num_grids"])),
-
-                    leverage=max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(p["leverage"]))),
-
-                    reasoning=p.get("reasoning", ""),
-
-                    market_regime=p.get("market_regime", "ranging"),
-
-                    narrative=p.get("narrative", ""),
-
-                )
-
-                picks.append(decision)
-
-                logger.info(
-
-                    f"🤖 PORTFOLIO PICK: {decision.symbol} | dir={decision.direction} | "
-
-                    f"regime={decision.market_regime} | conf={decision.confidence:.2f} | "
-
-                    f"grid={decision.lower:.4f}-{decision.upper:.4f} | "
-
-                    f"grids={decision.num_grids} | lev={decision.leverage}x"
-
-                )
-
-            except (KeyError, ValueError) as e:
-
-                logger.error(f"🤖 Portfolio pick parse error: {e} | raw: {p}")
-
+            current_count = sector_counts.get(sector, 0)
+            if current_count >= max_per_sector and sector != "Other":
                 continue
 
+            # Get token profile for direction bias and params
+            profile = self.risk_monitor.get_token_profile(coin.symbol)
+            profile_leverage = max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(profile.get("leverage", DEFAULT_LEVERAGE))))
+            profile_order_size = profile.get("order_size_usdt", 5.0)
 
+            # Determine market regime from mean reversion + range
+            if coin.mean_reversion_score > 0.7:
+                regime = "ranging"
+            elif coin.atr_pct > 2.5:
+                regime = "volatile"
+            elif coin.range_pct > 6:
+                regime = "volatile"
+            else:
+                regime = "ranging"
 
-        if parsed.get("portfolio_strategy"):
+            # Direction: use dynamic trend_direction from scanner OHLCV analysis.
+            # Grid trading profits from oscillation — neutral is the default.
+            # Only apply directional bias when scanner detects a clear trend
+            # AND mean reversion is weak (coin is trending, not ranging).
+            direction = coin.trend_direction
 
-            logger.info(f"🤖 Portfolio strategy: {parsed['portfolio_strategy']}")
+            # Confidence based on composite score
+            confidence = min(0.9, score)
 
+            decision = PreTradeDecision(
+                symbol=coin.symbol,
+                direction=direction,
+                confidence=round(confidence, 2),
+                upper=coin.suggested_upper,
+                lower=coin.suggested_lower,
+                num_grids=normalize_grid_density(coin.suggested_grids, wallet_balance=wallet_balance),
+                leverage=profile_leverage,
+                reasoning=f"Algorithmic pick: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M",
+                market_regime=regime,
+                narrative=f"{sector} sector, {regime} regime, {coin.atr_pct:.1f}% ATR",
+            )
+            picks.append(decision)
+            sector_counts[sector] = current_count + 1
 
+            logger.info(
+                f"📊 ALGO PICK: {decision.symbol} | dir={decision.direction} | "
+                f"sector={sector} | score={coin.grid_score:.3f} | "
+                f"mr={coin.mean_reversion_score:.2f} | trend={coin.trend_direction} | "
+                f"regime={regime} | conf={confidence:.2f} | "
+                f"grid={decision.lower:.4f}-{decision.upper:.4f} | "
+                f"grids={decision.num_grids} | lev={decision.leverage}x"
+            )
 
         return picks
+
+    def _agent_pick_portfolio(self, top_coins: list[dict], num_picks: int) -> list[PreTradeDecision]:
+
+        """DEPRECATED: LLM-based portfolio selection removed. Use _select_coins_algorithmically()."""
+
+        logger.warning("_agent_pick_portfolio called but is deprecated — use _select_coins_algorithmically")
+
+        return []
 
 
 
@@ -1610,9 +1350,9 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
 
 
-        # Per-grid LLM agent removed from default runtime. Monitoring/close is
-        # handled by deterministic fee-aware rules.
-        agent = TradingAgent(client=self.shared_client) if USE_LLM_BRAIN else None
+        # v2: Create agent with shared client instead of new client per grid
+
+        agent = RuleBasedAgent()
 
 
 
@@ -1622,9 +1362,31 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
         final_order_size = adjusted_order_size or token_profile.get("order_size_usdt", BASE_ORDER_SIZE_USDT)
 
-        engine = DryRunEngine()
-
-        state = self._deploy_biased_grid(
+        from dry_run_engine import DryRunEngine
+        from adaptive_grid import AdaptiveConfig, default_config
+        
+        # v3: Create adaptive config from token profile
+        adaptive_cfg = default_config()
+        # Override from token profile if specified
+        if token_profile.get("spike_window_sec"):
+            adaptive_cfg.spike_window_sec = token_profile["spike_window_sec"]
+        if token_profile.get("spike_threshold_pct"):
+            adaptive_cfg.spike_threshold_pct = token_profile["spike_threshold_pct"]
+        if token_profile.get("max_same_side_fills"):
+            adaptive_cfg.max_same_side_fills = token_profile["max_same_side_fills"]
+        if token_profile.get("recenter_trigger_pct"):
+            adaptive_cfg.recenter_trigger_pct = token_profile["recenter_trigger_pct"]
+        if token_profile.get("exp_sizing_gamma"):
+            adaptive_cfg.exp_sizing_gamma = token_profile["exp_sizing_gamma"]
+        
+        # v4: Use LiveEngine when DRY_RUN=false, DryRunEngine when true
+        if DRY_RUN:
+            engine = DryRunEngine(adaptive_config=adaptive_cfg)
+        else:
+            from live_engine import LiveEngine
+            engine = LiveEngine()
+        
+        state = await self._deploy_biased_grid(
 
             engine,
 
@@ -1635,6 +1397,10 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
             order_size_usdt=final_order_size,
 
         )
+        
+        # v4: Register LiveEngine for execution routing
+        if not DRY_RUN and hasattr(engine, 'notify_fill'):
+            self.register_live_engine(coin_score.symbol, engine)
 
 
 
@@ -1763,11 +1529,11 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
 
 
-    def _deploy_biased_grid(
+    async def _deploy_biased_grid(
 
         self,
 
-        engine: DryRunEngine,
+        engine,  # DryRunEngine or LiveEngine
 
         coin_score: CoinScore,
 
@@ -1775,8 +1541,7 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
         order_size_usdt: float = BASE_ORDER_SIZE_USDT,
 
-    ) -> DryRunState:
-
+    ):
         """Deploy a direction-biased grid to an isolated engine."""
 
         grid = self.grid_calc.calculate_grid_levels(
@@ -1837,23 +1602,54 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
 
 
-        state = DryRunState(
-
-            grid=grid,
-
-            started_at=time.time(),
-
-            current_price=coin_score.price,
-
-        )
-
-        for level in grid.grid_levels:
-
-            level.status = "placed"
-
-
-
-        engine.state = state
+        # v4: Create appropriate state based on engine type
+        from live_engine import LiveEngine
+        
+        if isinstance(engine, LiveEngine):
+            # LiveEngine — create LiveState and place real orders
+            from live_engine import LiveState
+            state = LiveState(
+                grid=grid,
+                started_at=time.time(),
+                current_price=coin_score.price,
+            )
+            
+            # Place real orders via GridEngine (async)
+            grid_engine = self.grid_calc  # Reuse the GridEngine instance
+            
+            # Set leverage first
+            try:
+                await grid_engine.set_leverage(grid.symbol, grid.leverage)
+            except Exception as e:
+                logger.error(f"Failed to set leverage: {e}")
+            
+            # Place limit orders
+            for level in grid.grid_levels:
+                try:
+                    order = await grid_engine.exchange.create_limit_order(
+                        symbol=grid.symbol,
+                        side=level.side.lower(),
+                        amount=level.qty,
+                        price=level.price,
+                    )
+                    level.order_id = order["id"]
+                    level.status = "placed"
+                    logger.info(f"  ✅ {level.side} {level.qty} @ {level.price:.4f} → {order['id']}")
+                except Exception as e:
+                    level.status = "failed"
+                    logger.error(f"  ❌ {level.side} {level.qty} @ {level.price:.4f} → {e}")
+            
+            engine.state = state
+        else:
+            # DryRunEngine — create DryRunState (simulated)
+            state = DryRunState(
+                grid=grid,
+                started_at=time.time(),
+                current_price=coin_score.price,
+            )
+            for level in grid.grid_levels:
+                level.status = "placed"
+            engine.state = state
 
         return state
 
@@ -1885,12 +1681,9 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
             return "no_fills_timeout"
 
-        # Funded-challenge rule: never crystallize a losing filled position just
-        # because it is old or stagnant. Keep it open until it recovers to
-        # positive PnL, then close/recycle gracefully.
-        if fills > 0 and total_pnl < 0:
+        if total_pnl < 0 and seconds_since_progress >= LOSING_STAGNANT_TIMEOUT_SECONDS:
 
-            return None
+            return "losing_stagnant"
 
         if seconds_since_progress >= STAGNANT_GRID_TIMEOUT_SECONDS:
 
@@ -1943,14 +1736,42 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
                 try:
 
                     price = await asyncio.wait_for(price_queue.get(), timeout=5)
+                    
+                    # Track fills before update
+                    fills_before = len(slot.state.fills) if hasattr(slot.state, 'fills') else 0
 
                     event = slot.engine.on_price_update(price)
+                    
+                    # Record new fills to DB
+                    fills_after = len(slot.state.fills) if hasattr(slot.state, 'fills') else 0
+                    if fills_after > fills_before and hasattr(slot.state, 'fills'):
+                        for fill in slot.state.fills[fills_before:]:
+                            try:
+                                self.journal.record_fill(
+                                    grid_id=slot.state.grid.grid_id,
+                                    symbol=slot.symbol,
+                                    side=getattr(fill, 'side', 'unknown'),
+                                    price=getattr(fill, 'price', 0),
+                                    qty=getattr(fill, 'qty', 0),
+                                    realized_pnl=getattr(fill, 'sim_pnl', 0),
+                                    order_id=f"sim_{getattr(fill, 'level_index', 0)}",
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to record fill: {e}")
 
-                    if event in {"target_hit", "drawdown", "spike_close"}:
-
+                    # v3: Handle new adaptive grid events
+                    if event in {"target_hit", "drawdown", "spike_close", "exposure_breach"}:
                         close_reason = event
-
                         break
+                    elif event == "cycle_complete":
+                        # v4: Multi-cycle — grid reset for next cycle, continue monitoring
+                        logger.info(f"🔄 [#{slot.slot_id}] Cycle complete for {slot.symbol} — continuing")
+                    elif event in {"recenter", "trail"}:
+                        # Grid was recentered or trailed — log but continue
+                        logger.info(f"🔄 [#{slot.slot_id}] {event} event for {slot.symbol}")
+                    elif event is None and slot.engine._adaptive and slot.engine._adaptive.spike_detector.is_paused():
+                        # Spike pause — skip status logging to reduce noise
+                        continue
 
                 except asyncio.TimeoutError:
 
@@ -1970,36 +1791,6 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
                 current_pnl = float(status.get("total_pnl") or 0.0)
 
-                # Fee-aware PnL collection: if closed + open PnL is enough
-                # after estimated fees/spread buffer, close the grid and free
-                # capital for the next scan-selected opportunity.
-                if current_fills > 0 and current_price > 0:
-                    spread_price = current_price * 0.0002
-                    close_decision = self.close_optimizer.should_close(
-                        GridStatus(
-                            fills=current_fills,
-                            realized_pnl=float(status.get("realized_pnl") or 0.0),
-                            unrealized_pnl=float(status.get("unrealized_pnl") or 0.0),
-                            allocated_margin=float(status.get("allocated_margin_usdt") or 0.0),
-                            order_size_usdt=float(slot.adjusted_order_size or 0.0),
-                            avg_entry_price=float(status.get("entry_price") or current_price),
-                            current_bid=current_price - spread_price / 2,
-                            current_ask=current_price + spread_price / 2,
-                            current_mark=current_price,
-                            direction=str(status.get("position_side") or slot.decision.direction or "neutral").lower(),
-                            grid_levels=int(status.get("num_grids") or slot.decision.num_grids or 0),
-                            filled_levels=int(status.get("filled_levels") or current_fills),
-                            age_seconds=now - start,
-                        )
-                    )
-                    if close_decision.should_close:
-                        logger.info(
-                            f"💰 [#{slot.slot_id}] Fee-aware profit lock CLOSE | "
-                            f"net=${close_decision.net_pnl:.4f} | gross=${close_decision.gross_pnl:.4f} | "
-                            f"fees=${close_decision.fee_estimate:.4f} | {close_decision.reason}"
-                        )
-                        close_reason = "profit_lock"
-                        break
                 price_move_pct = 0.0
 
                 if last_progress_price:
@@ -2102,9 +1893,9 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
 
 
-                # Optional legacy LLM mid-trade check. Disabled by default so the
-                # strategy remains deterministic and auditable.
-                if USE_LLM_BRAIN and slot.agent and now - last_agent_check >= MID_TRADE_CHECK_INTERVAL:
+                # LLM mid-trade check
+
+                if now - last_agent_check >= MID_TRADE_CHECK_INTERVAL:
 
                     try:
 
@@ -2116,7 +1907,11 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
                         grid_status["token_profile"] = slot.token_profile
 
-                        mid_decision = slot.agent.decide_mid_trade(grid_status)
+                        if slot.agent:
+                            mid_decision = slot.agent.decide_mid_trade(grid_status)
+                        else:
+                            from trading_agent import MidTradeDecision
+                            mid_decision = MidTradeDecision(action="hold", reasoning="no agent")
 
                         if mid_decision.action == "close":
 
@@ -2152,26 +1947,11 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
                 if now - start > profile_timeout_seconds:
 
-                    if current_fills > 0 and current_pnl < 0:
+                    logger.warning(f"⏰ [#{slot.slot_id}] Grid timeout ({profile_timeout}min)")
 
-                        logger.warning(
+                    close_reason = "timeout"
 
-                            f"⏰ [#{slot.slot_id}] Grid timeout ({profile_timeout}min) but PnL is negative "
-                            f"(${current_pnl:.4f}); holding until position returns positive"
-
-                        )
-
-                        last_progress_time = now
-
-                        start = now - profile_timeout_seconds + 60
-
-                    else:
-
-                        logger.warning(f"⏰ [#{slot.slot_id}] Grid timeout ({profile_timeout}min)")
-
-                        close_reason = "timeout"
-
-                        break
+                    break
 
 
 
@@ -2183,9 +1963,21 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
         except Exception as e:
 
-            logger.error(f"❌ [#{slot.slot_id}] Price bus monitor error: {e}")
+            # Transient WebSocket errors should not kill the grid immediately.
+            # The price_bus auto-reconnects, so we retry a few times before giving up.
+            error_str = str(e).lower()
+            is_transient = any(kw in error_str for kw in [
+                "keepalive ping timeout", "1011", "connection closed",
+                "no close frame", "ping failed", "recv error",
+            ])
 
-            close_reason = "price_bus_error"
+            if is_transient:
+                logger.warning(f"⚠️ [#{slot.slot_id}] Transient price bus error (will retry): {e}")
+                # Don't close — let the grid be re-deployed by the manager's next cycle
+                close_reason = "transient_error"
+            else:
+                logger.error(f"❌ [#{slot.slot_id}] Price bus monitor error: {e}")
+                close_reason = "price_bus_error"
 
         finally:
 
@@ -2204,6 +1996,10 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
     async def _on_grid_closed(self, slot: GridSlot, close_reason: str):
 
         """Handle a grid closing — record results, update wallet, free the slot."""
+        
+        # v4: Unregister LiveEngine if it was live
+        if not DRY_RUN:
+            self.unregister_live_engine(slot.symbol)
 
         status = slot.engine.get_status()
 
@@ -2379,46 +2175,83 @@ Pick {num_picks} coins for concurrent grid trading. Respond with JSON only."""
 
 
 
-        # Post-trade learning (LLM). Optional: disabled by default when
-        # USE_LLM_BRAIN=false, so deterministic dry-run slots intentionally
-        # have slot.agent=None.
-        if slot.agent is not None:
-            try:
-                cycle_result = {
-                    "slot_id": slot.slot_id,
-                    "symbol": slot.symbol,
-                    "direction": slot.decision.direction,
-                    "market_regime": slot.decision.market_regime,
-                    "confidence": slot.decision.confidence,
-                    "grid_range": f"${slot.state.grid.lower_price:.4f}-${slot.state.grid.upper_price:.4f}",
-                    "leverage": slot.adjusted_leverage,
-                    "order_size": slot.adjusted_order_size,
-                    "num_grids": slot.state.grid.num_grids,
-                    "total_pnl": total_pnl,
-                    "realized_pnl": realized,
-                    "fills": fills,
-                    "duration_min": round(duration / 60, 1),
-                    "close_reason": close_reason,
-                    # v2: Portfolio context
-                    "wallet_balance": wallet_state["balance"],
-                    "wallet_exposure_pct": wallet_state["exposure_pct"],
-                }
+        # Post-trade learning (LLM)
+
+        try:
+
+            cycle_result = {
+
+                "slot_id": slot.slot_id,
+
+                "symbol": slot.symbol,
+
+                "direction": slot.decision.direction,
+
+                "market_regime": slot.decision.market_regime,
+
+                "confidence": slot.decision.confidence,
+
+                "grid_range": f"${slot.state.grid.lower_price:.4f}-${slot.state.grid.upper_price:.4f}",
+
+                "leverage": slot.adjusted_leverage,
+
+                "order_size": slot.adjusted_order_size,
+
+                "num_grids": slot.state.grid.num_grids,
+
+                "total_pnl": total_pnl,
+
+                "realized_pnl": realized,
+
+                "fills": fills,
+
+                "duration_min": round(duration / 60, 1),
+
+                "close_reason": close_reason,
+
+                # v2: Portfolio context
+
+                "wallet_balance": wallet_state["balance"],
+
+                "wallet_exposure_pct": wallet_state["exposure_pct"],
+
+            }
+
+            if slot.agent:
                 learning = slot.agent.analyze_post_trade(cycle_result)
-                if learning:
-                    logger.info(f"🧠 [#{slot.slot_id}] Learning: {learning.suggestion}")
-                    # v2: Record learning to journal
-                    try:
-                        self.journal.record_learning(
-                            symbol=slot.symbol,
-                            what_worked=learning.what_worked,
-                            what_failed=learning.what_failed,
-                            suggestion=learning.suggestion,
-                            pattern=learning.pattern_observed,
-                        )
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.error(f"🧠 Post-trade learning error: {e}")
+            else:
+                learning = None
+
+            if learning:
+
+                logger.info(f"🧠 [#{slot.slot_id}] Learning: {learning.suggestion}")
+
+                # v2: Record learning to journal
+
+                try:
+
+                    self.journal.record_learning(
+
+                        symbol=slot.symbol,
+
+                        what_worked=learning.what_worked,
+
+                        what_failed=learning.what_failed,
+
+                        suggestion=learning.suggestion,
+
+                        pattern=learning.pattern_observed,
+
+                    )
+
+                except Exception:
+
+                    pass
+
+        except Exception as e:
+
+            logger.error(f"🧠 Post-trade learning error: {e}")
+
 
 
         # Telegram alert
@@ -2585,8 +2418,11 @@ def _serialize_slots(slots: dict) -> dict:
     result = {}
     for slot_id, slot in slots.items():
         status = slot.engine.get_status()
+        grid_id = slot.state.grid.grid_id if slot.state else None
         result[str(slot_id)] = {
             "slot_id": slot.slot_id,
+            "grid_id": grid_id,
+            "trade_id": grid_id,
             "symbol": slot.symbol,
             "direction": getattr(slot.decision, "direction", "unknown"),
             "leverage": slot.adjusted_leverage,
@@ -2602,7 +2438,7 @@ def _serialize_slots(slots: dict) -> dict:
             "duration_min": round((time.time() - slot.started_at) / 60, 1),
             "status": "active",
             "close_reason": getattr(slot, "close_reason", None),
-            "grid_id": slot.state.grid.grid_id if slot.state else None,
+            "grid_id": grid_id,
             "upper_price": slot.state.grid.upper_price if slot.state else None,
             "lower_price": slot.state.grid.lower_price if slot.state else None,
         "num_grids": slot.state.grid.num_grids if slot.state else None,
@@ -2613,53 +2449,16 @@ def _serialize_slots(slots: dict) -> dict:
     return result
 
 
-# Shared state file path — written by bot, read by grid_api.py
-BOT_STATE_FILE = "/tmp/grid_trader_state.json"
-TRADE_DB_FILE = os.path.join(os.path.dirname(__file__), "multi_grid_trades.db")
-
-
-def _load_symbol_performance() -> dict[str, dict]:
-    """Load per-symbol closed-trade expectancy for deployment filtering."""
-    if not os.path.exists(TRADE_DB_FILE):
-        return {}
-    try:
-        conn = sqlite3.connect(TRADE_DB_FILE)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        rows = cur.execute(
-            """
-            SELECT symbol,
-                   COUNT(*) AS closed_trades,
-                   COALESCE(AVG(total_pnl), 0) AS avg_pnl,
-                   COALESCE(SUM(CASE WHEN COALESCE(total_pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS wins
-            FROM grid_cycles
-            WHERE closed_at IS NOT NULL
-            GROUP BY symbol
-            """
-        ).fetchall()
-        conn.close()
-        performance = {}
-        for row in rows:
-            closed_trades = int(row["closed_trades"] or 0)
-            wins = int(row["wins"] or 0)
-            performance[row["symbol"]] = {
-                "closed_trades": closed_trades,
-                "avg_pnl": float(row["avg_pnl"] or 0.0),
-                "win_rate": (wins / closed_trades * 100.0) if closed_trades else 0.0,
-            }
-        return performance
-    except Exception as e:
-        logger.warning(f"Could not load symbol performance filter: {e}")
-        return {}
+# Shared state/lock/DB paths — written by bot, read by grid_api.py.
+# Keep env overrides so Docker can use mounted persistent volumes while the
+# legacy VPS process can keep the old /tmp + project-root defaults.
+BOT_STATE_FILE = os.getenv("GRID_TRADER_STATE_FILE", "/tmp/grid_trader_state.json")
+MANAGER_LOCK_FILE = os.getenv("GRID_TRADER_MANAGER_LOCK_FILE", "/tmp/grid_trader_manager.lock")
+TRADE_DB_FILE = os.getenv("GRID_TRADER_DB_FILE", os.path.join(os.path.dirname(__file__), "multi_grid_trades.db"))
 
 
 def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
-    """Return closed-trade stats/history from SQLite.
-
-    The dashboard must not use the manager's in-memory counters for lifetime
-    closed trade totals because those counters reset whenever the dry-run
-    process restarts. SQLite is the durable source of truth.
-    """
+    """Return DB-backed closed trade stats/history for dashboard continuity."""
     if not os.path.exists(TRADE_DB_FILE):
         return {}, []
     try:
@@ -2699,6 +2498,8 @@ def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
         ).fetchall():
             trades.append({
                 "slot_id": r["grid_id"],
+                "grid_id": r["grid_id"],
+                "trade_id": r["grid_id"],
                 "symbol": r["symbol"],
                 "started_at": r["started_at"],
                 "closed_at": r["closed_at"],
@@ -2718,6 +2519,7 @@ def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
     except Exception as e:
         logger.warning(f"Could not load DB closed-trade source of truth: {e}")
         return {}, []
+
 
 def _push_api_state(manager):
     """Dump current bot state to shared file for grid_api.py to serve."""
@@ -2745,6 +2547,8 @@ def _push_api_state(manager):
         }
         state = {
             "mode": "running" if manager._running else ("paused" if manager._deployment_paused_until > time.time() else "stopped"),
+            "writer_pid": os.getpid(),
+            "run_id": getattr(manager, "_run_id", None),
             "started_at": getattr(manager, "_started_at", None),
             "wallet": {
                 "balance": wallet_state["balance"],
@@ -2787,6 +2591,20 @@ def _push_api_state(manager):
 
 async def main():
 
+    lock_fh = open(MANAGER_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.seek(0)
+        lock_fh.truncate()
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+    except BlockingIOError:
+        logger.error(
+            f"Another multi_grid_manager.py instance already holds {MANAGER_LOCK_FILE}; "
+            "exiting to prevent conflicting state writers."
+        )
+        return
+
     manager = MultiGridManager(max_grids=MAX_CONCURRENT_GRIDS)
 
     try:
@@ -2796,6 +2614,11 @@ async def main():
     finally:
 
         await manager.close()
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
+        except Exception:
+            pass
 
 
 

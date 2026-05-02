@@ -44,7 +44,7 @@ class GridApiStateNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized['slots']['1']['symbol'], 'BASED/USDT:USDT')
         self.assertEqual(normalized['last_update'], 1777214430.61)
 
-    def test_state_metadata_balance_includes_db_closed_pnl_and_active_unrealized_separately(self):
+    def test_state_metadata_balance_uses_state_wallet_as_source_of_truth(self):
         original_state = grid_api._state
         try:
             grid_api._state = grid_api._coerce_state({
@@ -73,14 +73,12 @@ class GridApiStateNormalizationTests(unittest.TestCase):
             with patch.object(grid_api, '_load_db_performance', return_value=(db_stats, [])):
                 state = grid_api._state_with_metadata()
 
-            # Closed DB PnL is already realized; active slot realized PnL from
-            # completed pairs should also move wallet balance. Unrealized PnL
-            # must remain separate as equity, not cash balance.
-            self.assertEqual(state['wallet']['balance'], 101.75)
-            self.assertEqual(state['wallet']['realized_pnl'], 1.75)
+            # Balance comes from state wallet directly (bot writes it correctly).
+            # DB stats are for display only — not added to balance.
+            self.assertEqual(state['wallet']['balance'], 100.0)
             self.assertEqual(state['wallet']['unrealized_pnl'], -0.05)
-            self.assertEqual(state['wallet']['equity'], 101.7)
-            self.assertEqual(state['stats']['total_pnl'], 1.5)
+            self.assertEqual(state['wallet']['equity'], 99.95)
+            self.assertEqual(state['stats']['total_pnl'], 0.0)  # from state realized_pnl, not DB
             self.assertEqual(state['stats']['active_pnl'], -0.05)
         finally:
             grid_api._state = original_state
@@ -99,10 +97,10 @@ class GridApiStateNormalizationTests(unittest.TestCase):
             ):
                 wallet = asyncio.run(grid_api.get_wallet())
 
-            self.assertEqual(wallet['balance'], 101.1)
-            self.assertEqual(wallet['realized_pnl'], 1.1)
+            # Balance from state wallet (100.0), not initial + DB + realized
+            self.assertEqual(wallet['balance'], 100.0)
             self.assertEqual(wallet['unrealized_pnl'], 0.2)
-            self.assertEqual(wallet['equity'], 101.3)
+            self.assertEqual(wallet['equity'], 100.2)
         finally:
             grid_api._state = original_state
 

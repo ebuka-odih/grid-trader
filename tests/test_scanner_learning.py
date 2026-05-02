@@ -68,6 +68,37 @@ class ScannerLearningTests(unittest.TestCase):
 
         self.assertGreater(adjusted.final_score, adjusted.market_score)
         self.assertGreater(adjusted.learning_score, 0.0)
+    def test_quality_gate_blocks_negative_expectancy_low_sharpe_symbols(self):
+        learning = ScannerLearning(now_fn=lambda: 1_000.0, failure_threshold=99, state_path=None)
+        for pnl in [0.01, 0.01, 0.01, -0.08, -0.08]:
+            learning.record_trade(
+                "BAD/USDT:USDT",
+                total_pnl=pnl,
+                close_reason="target_hit" if pnl > 0 else "timeout",
+                duration_seconds=60,
+            )
+
+        adjusted = learning.score_candidate(coin(symbol="BAD/USDT:USDT", score=0.95))
+
+        self.assertTrue(adjusted.cooldown_active)
+        self.assertEqual(adjusted.final_score, 0.0)
+        self.assertIn("quality gate", adjusted.skip_reason)
+        self.assertIn("expectancy", adjusted.skip_reason)
+
+    def test_quality_gate_allows_high_win_positive_expectancy_symbols(self):
+        learning = ScannerLearning(now_fn=lambda: 1_000.0, state_path=None)
+        for pnl in [0.04, 0.03, 0.03, 0.02, -0.05]:
+            learning.record_trade(
+                "GOOD/USDT:USDT",
+                total_pnl=pnl,
+                close_reason="target_hit" if pnl > 0 else "timeout",
+                duration_seconds=55,
+            )
+
+        adjusted = learning.score_candidate(coin(symbol="GOOD/USDT:USDT", score=0.5))
+
+        self.assertFalse(adjusted.cooldown_active)
+        self.assertGreater(adjusted.final_score, adjusted.market_score)
 
 
 if __name__ == "__main__":

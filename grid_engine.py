@@ -126,8 +126,13 @@ class GridEngine:
         current_price: float,
         leverage: int = DEFAULT_LEVERAGE,
         order_size_usdt: float = BASE_ORDER_SIZE_USDT,
+        exp_sizing_gamma: float = 0.0,
     ) -> GridState:
-        """Calculate evenly-spaced grid levels with symbol-aware precision."""
+        """Calculate evenly-spaced grid levels with symbol-aware precision.
+        
+        v3: Supports exponential level sizing (exp_sizing_gamma > 0).
+        When gamma > 0, levels closer to current price get larger orders.
+        """
         # Calculate quantity per grid level
         # Each order_size_usdt is margin allocated per grid level. Leverage
         # controls the simulated/live notional exposure for that level.
@@ -135,8 +140,6 @@ class GridEngine:
         qty_per_level = notional_per_level / current_price
         
         # Get symbol-specific precision
-        # Note: This is synchronous for simplicity, but could be made async
-        # For now, we'll use default precision and improve in async context if needed
         price_precision = 4  # Default for most USDT pairs
         qty_precision = 3    # Default quantity precision
         min_qty = 0.001      # Default minimum quantity
@@ -148,6 +151,10 @@ class GridEngine:
 
         step = (upper - lower) / num_grids
         levels = []
+        
+        # v3: Pre-compute exponential sizing factors
+        import math
+        total_range = upper - lower
 
         for i in range(num_grids + 1):
             price = self._round_to_precision(lower + step * i, price_precision)
@@ -155,11 +162,23 @@ class GridEngine:
                 continue  # skip level too close to current price
 
             side = "Buy" if price < current_price else "Sell"
+            
+            # v3: Exponential level sizing
+            if exp_sizing_gamma > 0:
+                dist = abs(price - current_price) / max(total_range, 1e-8)
+                dist = min(dist, 1.0)
+                factor = math.exp(-exp_sizing_gamma * dist * 3)
+                factor = max(0.3, min(1.0, factor))  # clamp 30%-100%
+                level_qty = self._round_to_precision(qty_per_level * factor, qty_precision)
+                level_qty = max(level_qty, min_qty)
+            else:
+                level_qty = qty_per_level
+            
             levels.append(GridLevel(
                 index=i,
                 price=price,
                 side=side,
-                qty=qty_per_level,
+                qty=level_qty,
             ))
 
         grid = GridState(

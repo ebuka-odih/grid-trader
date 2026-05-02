@@ -2,6 +2,8 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from types import SimpleNamespace
+from pathlib import Path
 
 from improvement_loop import ImprovementLoop
 from portfolio_risk_monitor import PortfolioRiskMonitor
@@ -211,11 +213,45 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
         }
 
         exposure = monitor.get_portfolio_exposure(active_grids, wallet_balance=100.0)
-        actions = monitor.check_emergency(active_grids, wallet_balance=100.0)
+        actions = monitor.check_emergency(wallet_balance=100.0, active_grids=active_grids)
 
         self.assertEqual(exposure["total_exposure_pct"], 3.0)
         self.assertEqual(exposure["neutral_exposure_pct"], 3.0)
-        self.assertEqual(actions, [])
+        self.assertEqual(actions, {"emergency": False})
+
+    def test_check_deploy_accepts_live_grid_slot_objects(self):
+        """Risk monitor must not crash when active grids are GridSlot-like objects."""
+        monitor = PortfolioRiskMonitor(profiles_path="/tmp/nonexistent-token-profiles.json")
+        monitor.portfolio_config = {
+            "max_trade_wallet_exposure_pct": 10,
+            "max_total_wallet_exposure_pct": 80,
+        }
+        live_slot = SimpleNamespace(
+            adjusted_order_size=1.0,
+            fills=0,
+            decision=SimpleNamespace(direction="neutral", num_grids=10),
+        )
+
+        result = monitor.check_deploy(
+            symbol="AAVE/USDT:USDT",
+            direction="neutral",
+            leverage=50,
+            order_size_usdt=1.0,
+            wallet_balance=100.0,
+            active_grids={1: live_slot},
+            num_grids=10,
+        )
+
+        self.assertTrue(result["approved"], result)
+
+    # Removed: test_hummingbot_backend_factory_is_noop_for_default_dry_run
+    # (is_hummingbot_execution_backend and create_execution_adapter were removed)
+
+    # Removed: test_build_grid_deploy_request_preserves_risk_adjusted_trade_shape
+    # (build_grid_deploy_request was removed)
+
+    # Removed: test_hummingbot_backend_factory_requires_paper_config_but_does_not_place_orders
+    # (HUMMINGBOT_HOME was removed)
 
 
 if __name__ == "__main__":

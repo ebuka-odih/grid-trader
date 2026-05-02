@@ -37,8 +37,8 @@ class DecisionSupervisor:
 
     VALID_DIRECTIONS = {"long", "short", "neutral"}
     VALID_REGIMES = {"trending_up", "trending_down", "ranging", "volatile"}
-    DEFAULT_MIN_CONFIDENCE = 0.25
-    DEFAULT_MAX_GRID_WIDTH_PCT = 8.0
+    DEFAULT_MIN_CONFIDENCE = 0.10
+    DEFAULT_MAX_GRID_WIDTH_PCT = 15.0
     DEFAULT_MIN_GRID_WIDTH_PCT = 0.25
     DEFAULT_MIN_GRIDS = 10
     DEFAULT_MAX_GRIDS = 20

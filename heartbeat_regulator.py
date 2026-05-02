@@ -31,16 +31,21 @@ class HeartbeatRegulator:
         self,
         manager,
         interval_seconds: int = 15,
-        max_tick_age_seconds: int = 90,
-        pause_seconds: int = 30,
+        max_tick_age_seconds: int = 300,
+        pause_seconds: int = 10,
+        close_stale_after_seconds: int = 600,  # only force-close after 10min stale
+        min_stale_to_pause: int = 2,  # need multiple stale symbols to pause
         now_fn: Callable[[], float] | None = None,
     ):
         self.manager = manager
         self.interval_seconds = interval_seconds
         self.max_tick_age_seconds = max_tick_age_seconds
         self.pause_seconds = pause_seconds
+        self.close_stale_after_seconds = close_stale_after_seconds
+        self.min_stale_to_pause = min_stale_to_pause
         self._now_fn = now_fn or time.time
         self.last_snapshot: HeartbeatSnapshot | None = None
+        self._stale_since: dict[str, float] = {}  # symbol -> first seen stale time
 
     async def run(self):
         logger.info(
@@ -92,9 +97,26 @@ class HeartbeatRegulator:
             elif age > self.max_tick_age_seconds:
                 stale_symbols.append(symbol)
 
-        if stale_symbols:
+        # Track when each symbol first went stale
+        for sym in stale_symbols:
+            if sym not in self._stale_since:
+                self._stale_since[sym] = now
+        # Clear symbols that are no longer stale
+        for sym in list(self._stale_since):
+            if sym not in stale_symbols:
+                del self._stale_since[sym]
+
+        # Only pause if multiple symbols are stale (single stale = log + hold)
+        if stale_symbols and len(stale_symbols) >= self.min_stale_to_pause:
             self._pause_deployments(now, actions, "stale_price_data")
-            self._close_stale_slots(stale_symbols, actions)
+
+        # Only force-close grids that have been stale for > close_stale_after_seconds
+        long_stale = [sym for sym in stale_symbols if now - self._stale_since.get(sym, now) > self.close_stale_after_seconds]
+        if long_stale:
+            self._close_stale_slots(long_stale, actions)
+        elif stale_symbols:
+            # Just log, don't close
+            actions.append(f"watching_stale:{','.join(stale_symbols)}")
 
         snapshot = HeartbeatSnapshot(
             timestamp=now,
@@ -117,7 +139,7 @@ class HeartbeatRegulator:
             snapshot.active_grids,
             len(stale_symbols),
             actions or "none",
-            price_health,
+            {k: v for k, v in price_health.items() if k != "last_successful_recv"},
         )
         return snapshot
 
@@ -165,7 +187,47 @@ class HeartbeatRegulator:
             if state is not None and getattr(state, "is_active", False):
                 state.is_active = False
             slot.close_reason = "heartbeat_stale_price"
+
+            # Record PnL to DB before force-removing
+            try:
+                realized = float(status.get("realized_pnl") or 0.0)
+                unrealized = float(status.get("unrealized_pnl") or 0.0)
+                duration = time.time() - getattr(slot, "started_at", time.time())
+                journal = getattr(self.manager, "journal", None)
+                grid_state = getattr(slot, "state", None)
+                grid_obj = getattr(grid_state, "grid", None) if grid_state else None
+                grid_id = getattr(grid_obj, "grid_id", None) or f"slot-{slot_id}"
+                decision = getattr(slot, "decision", None)
+                direction = getattr(decision, "direction", "neutral") if decision else "neutral"
+                if journal and hasattr(journal, "record_cycle_close"):
+                    wallet_tracker = getattr(self.manager, "wallet_tracker", None)
+                    wallet_state = wallet_tracker.get_wallet_state() if wallet_tracker else {}
+                    journal.record_cycle_close(
+                        grid_id=grid_id,
+                        total_pnl=total_pnl,
+                        realized_pnl=realized,
+                        unrealized_pnl=unrealized,
+                        fills=fills,
+                        duration=duration,
+                        close_reason="heartbeat_stale_price",
+                        wallet_balance=wallet_state.get("balance", 0.0),
+                        wallet_exposure_pct=wallet_state.get("exposure_pct", 0.0),
+                        direction=direction,
+                        adjusted_leverage=getattr(slot, "adjusted_leverage", 0),
+                        adjusted_order_size=getattr(slot, "adjusted_order_size", 0.0),
+                    )
+                    logger.info("📝 Stale slot PnL saved: %s | pnl=$%.4f | fills=%s", slot.symbol, total_pnl, fills)
+            except Exception as e:
+                logger.error("Failed to save stale slot PnL for %s: %s", getattr(slot, "symbol", None), e)
+
             task = getattr(slot, "task", None)
             if task is not None and hasattr(task, "done") and not task.done():
                 task.cancel()
+            # Force-remove the slot from the manager so it can't block new deployments.
+            # If cleanup (_on_grid_closed) runs later, it will find the slot already gone
+            # and skip its own pop.
+            slots = getattr(self.manager, "slots", {})
+            if slot_id in slots:
+                slots.pop(slot_id, None)
+                logger.info(f"💓 Force-removed stale slot #{slot_id} ({slot.symbol})")
             actions.append(f"close_stale_grid:{slot_id}:{slot.symbol}")

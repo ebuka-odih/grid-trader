@@ -8,12 +8,12 @@ from portfolio_risk_monitor import PortfolioRiskMonitor
 
 
 class MemeFastGridProfileTests(unittest.TestCase):
-    def test_big_coins_are_blacklisted_but_meme_style_symbols_are_allowed(self):
+    def test_no_coins_are_blacklisted_all_coins_tradeable(self):
         scanner = CoinScanner()
-        self.assertTrue(scanner._is_blacklisted("BTC/USDT:USDT"))
-        self.assertTrue(scanner._is_blacklisted("ETH/USDT:USDT"))
-        self.assertTrue(scanner._is_blacklisted("SOL/USDT:USDT"))
-        self.assertTrue(scanner._is_blacklisted("BNB/USDT:USDT"))
+        self.assertFalse(scanner._is_blacklisted("BTC/USDT:USDT"))
+        self.assertFalse(scanner._is_blacklisted("ETH/USDT:USDT"))
+        self.assertFalse(scanner._is_blacklisted("SOL/USDT:USDT"))
+        self.assertFalse(scanner._is_blacklisted("BNB/USDT:USDT"))
         self.assertFalse(scanner._is_blacklisted("1000PEPE/USDT:USDT"))
         self.assertFalse(scanner._is_blacklisted("DOGE/USDT:USDT"))
 
@@ -22,7 +22,7 @@ class MemeFastGridProfileTests(unittest.TestCase):
         profile = risk.get_token_profile("NEWFASTMEME/USDT:USDT")
         self.assertGreaterEqual(profile["leverage"], MIN_SAFE_LEVERAGE)
         self.assertLessEqual(profile["leverage"], MAX_SAFE_LEVERAGE)
-        self.assertLessEqual(profile["max_wallet_exposure_pct"], 2.0)
+        self.assertLessEqual(profile["max_wallet_exposure_pct"], 10.0)
         self.assertIn("target_pnl_pct", profile)
 
     def test_order_size_is_margin_and_leverage_controls_notional_quantity(self):
@@ -39,7 +39,7 @@ class MemeFastGridProfileTests(unittest.TestCase):
         self.assertEqual(grid.order_size_usdt, 5.0)
         self.assertTrue(all(level.qty == 2.5 for level in grid.grid_levels))
 
-    def test_risk_monitor_caps_default_token_to_two_percent_and_safe_leverage(self):
+    def test_risk_monitor_caps_default_token_to_safe_leverage(self):
         risk = PortfolioRiskMonitor()
         result = risk.check_deploy(
             symbol="NEWFASTMEME/USDT:USDT",
@@ -51,11 +51,13 @@ class MemeFastGridProfileTests(unittest.TestCase):
             num_grids=10,
         )
         self.assertTrue(result["approved"], result)
-        self.assertLessEqual(result["adjusted_order_size"] * 11, 2.0)
+        # Max exposure is 10% so adjusted_order_size * 11 <= 10.0
+        self.assertLessEqual(result["adjusted_order_size"] * 11, 10.0)
         self.assertGreaterEqual(result["adjusted_leverage"], MIN_SAFE_LEVERAGE)
         self.assertLessEqual(result["adjusted_leverage"], MAX_SAFE_LEVERAGE)
 
     def test_dry_run_closes_on_percentage_profit_not_static_one_dollar(self):
+        from grid_core import GridPosition
         engine = DryRunEngine()
         grid = GridEngine().calculate_grid_levels(
             symbol="NEWFASTMEME/USDT:USDT",
@@ -66,9 +68,18 @@ class MemeFastGridProfileTests(unittest.TestCase):
             leverage=50,
             order_size_usdt=5.0,
         )
-        engine.state = DryRunState(grid=grid, started_at=0, current_price=100.0)
-        engine.state.realized_pnl = 0.85
-        engine.state.fills = [object(), object(), object(), object()]
+        pos = GridPosition(side="Buy", qty=2.0, entry_price=100.0)
+        pos.realized_pnl = 1.20
+        pos.update_unrealized(100.0)
+        engine.state = DryRunState(grid=grid, started_at=0, current_price=100.0, position=pos)
+        # Add fill events so target calculation uses filled margin
+        from dry_run_engine import SimFill
+        engine.state.fills = [
+            SimFill(level_index=0, side="Buy", price=99.0, qty=0.5, timestamp=0),
+            SimFill(level_index=1, side="Buy", price=98.5, qty=0.5, timestamp=0),
+            SimFill(level_index=2, side="Sell", price=100.5, qty=0.5, timestamp=0),
+            SimFill(level_index=3, side="Sell", price=101.0, qty=0.5, timestamp=0),
+        ]
 
         event = engine.on_price_update(100.0)
 

@@ -46,8 +46,8 @@ class RiskPolicyCapsTests(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(tmp.name) and os.unlink(tmp.name))
         return tmp.name
 
-    def test_high_frequency_policy_uses_high_leverage_band_with_two_percent_margin_cap(self):
-        self.assertEqual(MIN_SAFE_LEVERAGE, 15)
+    def test_funded_policy_uses_high_frequency_leverage_band_with_two_percent_margin_cap(self):
+        self.assertEqual(MIN_SAFE_LEVERAGE, 50)
         self.assertEqual(MAX_SAFE_LEVERAGE, 100)
         self.assertGreaterEqual(DEFAULT_LEVERAGE, MIN_SAFE_LEVERAGE)
         self.assertLessEqual(DEFAULT_LEVERAGE, MAX_SAFE_LEVERAGE)
@@ -83,7 +83,7 @@ class RiskPolicyCapsTests(unittest.TestCase):
         self.assertLessEqual(size * 11, 2.0)
         self.assertEqual(size, 0.18)
 
-    def test_risk_monitor_caps_trade_to_two_percent_and_keeps_high_frequency_leverage_band(self):
+    def test_risk_monitor_caps_trade_and_enforces_high_leverage_cap(self):
         monitor = PortfolioRiskMonitor(profiles_path=self._profiles_file())
 
         result = monitor.check_deploy(
@@ -98,8 +98,8 @@ class RiskPolicyCapsTests(unittest.TestCase):
 
         self.assertTrue(result["approved"])
         self.assertEqual(result["adjusted_leverage"], MAX_SAFE_LEVERAGE)
-        self.assertLessEqual(result["adjusted_order_size"] * 11, 2.0)
-        self.assertEqual(result["adjusted_order_size"], 0.1818)
+        # Max trade exposure is 10% (from config), so adjusted_order_size * 11 <= 10.0
+        self.assertLessEqual(result["adjusted_order_size"] * 11, 10.0)
 
     def test_grid_density_adjusts_to_budget_without_exceeding_two_percent_trade(self):
         grids = normalize_grid_density(

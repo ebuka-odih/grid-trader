@@ -16,6 +16,8 @@ import logging
 import time
 import json
 import sqlite3
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -27,8 +29,8 @@ import uvicorn
 
 # ── Paths ────────────────────────────────────────────────
 GRID_TRADER_ROOT = Path(__file__).parent.resolve()
-UI_DIR = Path("/home/forge1/.hermes/projects/grid_terminal")
-UI_DIST_DIR = UI_DIR / "dist"
+UI_DIR = Path(os.getenv("GRID_TRADER_UI_DIR", str(GRID_TRADER_ROOT / "frontend_dist"))).expanduser()
+UI_DIST_DIR = Path(os.getenv("GRID_TRADER_UI_DIST_DIR", str(UI_DIR if UI_DIR.name == "frontend_dist" else UI_DIR / "dist"))).expanduser()
 
 # ── Dynamic State File Selection ─────────────────────────────
 # Always use the most recently modified state file for fresh data
@@ -36,8 +38,8 @@ from pathlib import Path as _Path
 
 def _get_state_file() -> _Path:
     """Return the most recently modified state file."""
-    main_file = _Path("/tmp/grid_trader_state.json")
-    test_file = _Path("/tmp/grid_trader_test_state.json")
+    main_file = _Path(os.getenv("GRID_TRADER_STATE_FILE", "/tmp/grid_trader_state.json"))
+    test_file = _Path(os.getenv("GRID_TRADER_TEST_STATE_FILE", "/tmp/grid_trader_test_state.json"))
     
     candidates = []
     if main_file.exists():
@@ -105,7 +107,144 @@ DEFAULT_STATE: dict = {
 }
 _state: dict = json.loads(json.dumps(DEFAULT_STATE))
 _last_loaded_state_mtime = 0.0
-DB_PATH = GRID_TRADER_ROOT / "multi_grid_trades.db"
+DB_PATH = Path(os.getenv("GRID_TRADER_DB_FILE", str(GRID_TRADER_ROOT / "multi_grid_trades.db"))).expanduser()
+
+
+def _parse_simple_hummingbot_client_config(path: Path) -> dict:
+    """Parse the small subset of conf_client.yml needed by the dashboard."""
+    result = {
+        "exists": path.exists(),
+        "paper_trade_enabled": False,
+        "instance_id": None,
+        "heartbeat_enabled": False,
+        "heartbeat_interval_min": None,
+        "paper_trade_account_balance": {},
+    }
+    if not path.exists():
+        return result
+
+    in_balance = False
+    for raw in path.read_text(errors="ignore").splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw.startswith("paper_trade_account_balance:"):
+            in_balance = True
+            continue
+        if raw and not raw.startswith(" "):
+            in_balance = False
+        if in_balance and ":" in raw:
+            key, value = raw.strip().split(":", 1)
+            try:
+                result["paper_trade_account_balance"][key] = float(value.strip().strip('"\''))
+            except ValueError:
+                pass
+            continue
+        if ":" not in raw:
+            continue
+        key, value = raw.split(":", 1)
+        key = key.strip()
+        value = value.strip().strip('"\'')
+        if key == "instance_id":
+            result["instance_id"] = value
+        elif key == "paper_trade_enabled":
+            result["paper_trade_enabled"] = value.lower() in {"true", "1", "yes", "on"}
+        elif key == "heartbeat_enabled":
+            result["heartbeat_enabled"] = value.lower() in {"true", "1", "yes", "on"}
+        elif key == "heartbeat_interval_min":
+            try:
+                result["heartbeat_interval_min"] = float(value)
+            except ValueError:
+                pass
+    return result
+
+
+def _hummingbot_docker_status() -> dict:
+    """Best-effort local Docker status without failing API if Docker is unavailable."""
+    base = {"container_name": "hummingbot-paper", "container_running": False, "command": None}
+    try:
+        proc = subprocess.run(
+            ["docker", "inspect", "hummingbot-paper", "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return base
+        info = json.loads(proc.stdout)
+        state = info.get("State", {})
+        config = info.get("Config", {})
+        base["container_running"] = bool(state.get("Running"))
+        base["command"] = " ".join(config.get("Cmd") or [])
+    except Exception:
+        return base
+    return base
+
+
+def _read_dotenv_value(key: str, default: str | None = None) -> str | None:
+    env_path = GRID_TRADER_ROOT / ".env"
+    if not env_path.exists():
+        return default
+    for raw in env_path.read_text(errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() == key:
+            return v.strip().strip('"\'')
+    return default
+
+
+def _load_hummingbot_status() -> dict:
+    """Load Hummingbot adapter/config/signal status for the custom dashboard."""
+    backend = os.getenv("EXECUTION_BACKEND") or _read_dotenv_value("EXECUTION_BACKEND", "dry_run")
+    exchange = os.getenv("HUMMINGBOT_EXCHANGE") or _read_dotenv_value("HUMMINGBOT_EXCHANGE", "hyperliquid_perpetual")
+    allow_live_raw = os.getenv("HUMMINGBOT_ALLOW_LIVE") or _read_dotenv_value("HUMMINGBOT_ALLOW_LIVE", "false") or "false"
+    home = Path(os.getenv("HUMMINGBOT_HOME") or _read_dotenv_value("HUMMINGBOT_HOME", "/home/forge1/.hummingbot")).expanduser()
+    signals_path = home / "data" / "grid_trader_hummingbot_signals.json"
+    generated_dir = home / "conf" / "generated" / "grid_trader"
+    now = time.time()
+
+    payload = {}
+    grids = {}
+    if signals_path.exists():
+        try:
+            payload = json.loads(signals_path.read_text())
+            grids = payload.get("grids", {}) if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            grids = {}
+
+    active_grids = [g for g in grids.values() if isinstance(g, dict) and g.get("active")]
+    active_grids.sort(key=lambda g: str(g.get("grid_id", "")), reverse=True)
+    config_files = []
+    if generated_dir.exists():
+        config_files = sorted(generated_dir.glob("*.yml"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    return {
+        "backend": backend,
+        "exchange": exchange,
+        "allow_live": allow_live_raw.strip().lower() in {"1", "true", "yes", "on"},
+        "hummingbot_home": str(home),
+        "client_config": _parse_simple_hummingbot_client_config(home / "conf" / "conf_client.yml"),
+        "signals": {
+            "exists": signals_path.exists(),
+            "path": str(signals_path),
+            "age_seconds": round(now - signals_path.stat().st_mtime, 2) if signals_path.exists() else None,
+            "total_grids": len(grids),
+            "active_grids": len(active_grids),
+            "source": payload.get("source") if isinstance(payload, dict) else None,
+            "updated_at": payload.get("updated_at") if isinstance(payload, dict) else None,
+        },
+        "generated_configs": {
+            "count": len(config_files),
+            "dir": str(generated_dir),
+            "newest": [
+                {"name": p.name, "path": str(p), "age_seconds": round(now - p.stat().st_mtime, 2)}
+                for p in config_files[:10]
+            ],
+        },
+        "docker": _hummingbot_docker_status(),
+        "active_samples": active_grids[:25],
+    }
 
 
 def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
@@ -116,12 +255,13 @@ def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM grid_cycles WHERE closed_at IS NOT NULL")
+        # Only count trades with actual fills (exclude no_fills_timeout, price_bus_error, etc.)
+        cursor.execute("SELECT COUNT(*) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0")
         total_trades = int(cursor.fetchone()[0] or 0)
-        cursor.execute("SELECT COUNT(*) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(total_pnl, 0) > 0")
+        cursor.execute("SELECT COUNT(*) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0 AND COALESCE(total_pnl, 0) > 0")
         wins = int(cursor.fetchone()[0] or 0)
         losses = max(0, total_trades - wins)
-        cursor.execute("SELECT COALESCE(SUM(total_pnl), 0) FROM grid_cycles WHERE closed_at IS NOT NULL")
+        cursor.execute("SELECT COALESCE(SUM(total_pnl), 0) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0")
         total_pnl = float(cursor.fetchone()[0] or 0.0)
         win_rate = (wins / total_trades * 100) if total_trades else 0.0
         cursor.execute("""
@@ -129,7 +269,7 @@ def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
                    total_pnl, realized_pnl, fills_count, duration_seconds,
                    upper_price, lower_price, num_grids, leverage, was_profitable
             FROM grid_cycles
-            WHERE closed_at IS NOT NULL
+            WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0
             ORDER BY closed_at DESC
             LIMIT ?
         """, (limit,))
@@ -224,6 +364,14 @@ def _load_state_file(force: bool = False) -> None:
         logger.warning(f"Could not read bot state file {BOT_STATE_FILE}: {exc}")
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """Safely convert a value to float."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _state_with_metadata() -> dict:
     """Return the current state plus freshness metadata for clients.
     
@@ -238,42 +386,34 @@ def _state_with_metadata() -> dict:
     # Recalculate wallet balance from durable closed PnL plus active slot PnL.
     # Closed cycles are already realized cash for the dry-run wallet; active
     # slot realized PnL represents completed pairs inside still-open grids.
-    def _safe_float(value, default: float = 0.0) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
 
     slots = _state.get("slots", {})
     active_realized = sum(_safe_float(s.get("realized_pnl", 0)) for s in slots.values())
     active_unrealized = sum(_safe_float(s.get("unrealized_pnl", 0)) for s in slots.values())
 
-    # Update stats from active slots and DB-backed closed trade history before
-    # calculating wallet, so DB closed PnL participates in balance.
+    # Update stats from active slots and DB-backed closed trade history.
+    # DB stats are for display only — balance comes from the state file directly.
     db_stats, db_trades = _load_db_performance(limit=50)
-    closed_realized = _safe_float(db_stats.get("total_pnl"), 0.0) if db_stats else 0.0
-    total_realized = closed_realized + active_realized
 
-    # Balance = initial + realized PnL only. Equity includes open/unrealized PnL.
-    initial_balance = _safe_float(_state.get("wallet", {}).get("initial_balance", 100.0), 100.0)
-    corrected_balance = initial_balance + total_realized
-    corrected_equity = corrected_balance + active_unrealized
+    # Use state file wallet as source of truth for balance (the bot writes it correctly).
+    # DB total_pnl is cumulative across ALL runs and would inflate the balance.
+    state_wallet = _state.get("wallet", {})
+    current_balance = _safe_float(state_wallet.get("balance"), 100.0)
+    current_equity = current_balance + active_unrealized
 
     # Update wallet in returned state (don't mutate _state directly for cache stability)
     mutable_state = dict(_state)
-    mutable_state["wallet"] = dict(_state.get("wallet", {}))
-    mutable_state["wallet"]["balance"] = round(corrected_balance, 4)
-    mutable_state["wallet"]["equity"] = round(corrected_equity, 4)
-    mutable_state["wallet"]["realized_pnl"] = round(total_realized, 4)
-    mutable_state["wallet"]["closed_realized_pnl"] = round(closed_realized, 4)
-    mutable_state["wallet"]["active_realized_pnl"] = round(active_realized, 4)
+    mutable_state["wallet"] = dict(state_wallet)
+    mutable_state["wallet"]["balance"] = round(current_balance, 4)
+    mutable_state["wallet"]["equity"] = round(current_equity, 4)
+    mutable_state["wallet"]["realized_pnl"] = round(_safe_float(state_wallet.get("realized_pnl")), 4)
     mutable_state["wallet"]["unrealized_pnl"] = round(active_unrealized, 4)
 
     mutable_state["stats"] = dict(_state.get("stats", {}))
     mutable_state["stats"].update(db_stats)
+    # Override PnL with current run values (not cumulative DB which spans multiple runs)
+    mutable_state["stats"]["total_pnl"] = round(_safe_float(state_wallet.get("realized_pnl"), 0.0), 4)
     mutable_state["stats"]["active_pnl"] = round(active_unrealized, 4)
-    if "total_pnl" not in db_stats:
-        mutable_state["stats"]["total_pnl"] = round(total_realized, 4)
     if db_trades:
         mutable_state["completed_trades"] = db_trades
     
@@ -390,13 +530,19 @@ async def get_wallet():
 
 @app.get("/api/stats")
 async def get_stats():
-    """Get trade stats from database (source of truth)."""
+    """Get trade stats. PnL comes from the state file (current run only), not cumulative DB."""
     try:
-        stats, _ = _load_db_performance(limit=0)
-        return stats or _state["stats"]
+        _load_state_file()
+        db_stats, _ = _load_db_performance(limit=0)
+        stats = dict(db_stats) if db_stats else dict(_state.get("stats", {}))
+        # Override total_pnl with current run's realized PnL (not cumulative DB)
+        state_wallet = _state.get("wallet", {})
+        stats["total_pnl"] = _safe_float(state_wallet.get("realized_pnl"), 0.0)
+        stats["active_pnl"] = _safe_float(state_wallet.get("unrealized_pnl"), 0.0)
+        return stats
     except Exception as e:
         logger.error(f"Failed to load stats from DB: {e}")
-        return _state["stats"]
+        return _state.get("stats", {})
 
 
 @app.get("/api/scanner")
@@ -424,6 +570,12 @@ async def get_trades(limit: int = 50):
 @app.get("/api/prices")
 async def get_prices():
     return _state["current_prices"]
+
+
+@app.get("/api/hummingbot")
+async def get_hummingbot_status():
+    """Hummingbot paper adapter/config/signal status for dashboard display."""
+    return _load_hummingbot_status()
 
 
 @app.post("/api/pause")
@@ -670,7 +822,7 @@ async def startup():
     # Try to load from file, but don't overwrite if already has test data
     _load_state_file()
     # If state file has no slots but test state file exists, use test state
-    test_file = Path("/tmp/grid_trader_test_state.json")
+    test_file = Path(os.getenv("GRID_TRADER_TEST_STATE_FILE", "/tmp/grid_trader_test_state.json"))
     if test_file.exists() and len(_state.get("slots", {})) == 0:
         try:
             raw = json.loads(test_file.read_text())

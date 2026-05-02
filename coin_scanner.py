@@ -44,6 +44,7 @@ class CoinScore:
     suggested_lower: float
     suggested_grids: int
     suggested_leverage: int
+    trend_direction: str = "neutral"  # "long", "short", or "neutral" — dynamic from OHLCV slope
 
 
 class CoinScanner:
@@ -143,6 +144,25 @@ class CoinScanner:
 
         mr_score = self._mean_reversion_score(df)
 
+        # Determine trend direction from OHLCV slope
+        # Grid trading profits from oscillation (neutral), but when a clear trend
+        # exists, bias grid levels to accumulate in the trend direction.
+        close = df["close"]
+        returns = close.pct_change().dropna()
+        if len(returns) > 10:
+            slope = np.polyfit(range(len(returns)), returns.cumsum().values, 1)[0]
+        else:
+            slope = 0.0
+        # Strong trend threshold — only bias if slope is significant AND
+        # mean reversion is weak (coin is trending, not ranging)
+        STRONG_TREND_SLOPE = 0.0003
+        if mr_score < 0.6 and slope > STRONG_TREND_SLOPE:
+            trend_direction = "long"
+        elif mr_score < 0.6 and slope < -STRONG_TREND_SLOPE:
+            trend_direction = "short"
+        else:
+            trend_direction = "neutral"
+
         # Composite score:
         # - Range 1-8% is ideal for grid (too narrow = no profit, too wide = risky)
         range_score = max(0, 1 - abs(range_pct - 4.0) / 4.0)
@@ -185,16 +205,14 @@ class CoinScanner:
             suggested_lower=round(suggested_lower, 4),
             suggested_grids=suggested_grids,
             suggested_leverage=suggested_leverage,
+            trend_direction=trend_direction,
         )
 
     # ── Step 4: Safety Filters ─────────────────────────────────
 
     def _is_blacklisted(self, symbol: str) -> bool:
         """Check if a symbol contains any blacklisted token name."""
-        big_cap_blacklist = {
-            "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX",
-            "LINK", "DOT", "LTC", "BCH", "TRX", "TON"
-        }
+        big_cap_blacklist = set()  # No hardcoded blacklist — all coins tradeable
         blacklist = [b.strip().upper() for b in COIN_BLACKLIST.split(",") if b.strip()]
         blacklist = sorted(set(blacklist).union(big_cap_blacklist))
         base = symbol.replace("/USDT:USDT", "").replace("/USDT", "").upper()

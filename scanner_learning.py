@@ -9,6 +9,8 @@ banned because market conditions change.
 from __future__ import annotations
 
 import json
+import math
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -23,6 +25,9 @@ class TokenLearningState:
     losses: int = 0
     recent_failures: int = 0
     total_pnl: float = 0.0
+    total_win_pnl: float = 0.0
+    total_loss_abs: float = 0.0
+    pnl_squared_sum: float = 0.0
     avg_duration_seconds: float = 0.0
     cooldown_until: float = 0.0
     last_close_reason: str = ""
@@ -42,7 +47,14 @@ class AdjustedCandidate:
 class ScannerLearning:
     """Score modifier for adaptive market scanning."""
 
-    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "agent_close", "emergency"}
+    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "agent_close", "emergency", "exposure_breach"}
+    MIN_QUALITY_TRADES = int(os.getenv("MIN_SCANNER_QUALITY_TRADES", "5"))
+    MIN_HISTORICAL_WIN_RATE = float(os.getenv("MIN_HISTORICAL_WIN_RATE", "0.80"))
+    # User target: risk:reward above 1/5 means average reward should be at
+    # least 0.2x average loss; higher-quality symbols score better.
+    MIN_HISTORICAL_REWARD_RISK = float(os.getenv("MIN_HISTORICAL_REWARD_RISK", "0.20"))
+    MIN_HISTORICAL_SHARPE_UNIT = float(os.getenv("MIN_HISTORICAL_SHARPE_UNIT", "0.0"))
+    MIN_HISTORICAL_EXPECTANCY = float(os.getenv("MIN_HISTORICAL_EXPECTANCY", "0.0"))
 
     def __init__(
         self,
@@ -73,6 +85,7 @@ class ScannerLearning:
         state = self.get_state(symbol)
         state.trades += 1
         state.total_pnl += total_pnl
+        state.pnl_squared_sum += total_pnl * total_pnl
         state.last_close_reason = close_reason
         if state.trades == 1:
             state.avg_duration_seconds = duration_seconds
@@ -84,9 +97,12 @@ class ScannerLearning:
         profitable = total_pnl > 0 and close_reason == "target_hit"
         if profitable:
             state.wins += 1
+            state.total_win_pnl += max(0.0, total_pnl)
             state.recent_failures = max(0, state.recent_failures - 1)
         else:
             state.losses += 1
+            if total_pnl < 0:
+                state.total_loss_abs += abs(total_pnl)
             if close_reason in self.FAILURE_REASONS or total_pnl <= 0:
                 state.recent_failures += 1
 
@@ -95,6 +111,40 @@ class ScannerLearning:
 
         self.save()
         return state
+
+    def _quality_metrics(self, state: TokenLearningState) -> dict[str, float]:
+        trades = max(1, state.trades)
+        win_rate = state.wins / trades
+        avg_pnl = state.total_pnl / trades
+        avg_win = state.total_win_pnl / state.wins if state.wins else 0.0
+        avg_loss = state.total_loss_abs / state.losses if state.losses else 0.0
+        reward_risk = (avg_win / avg_loss) if avg_loss > 0 else (999.0 if state.wins else 0.0)
+        variance = max(0.0, (state.pnl_squared_sum / trades) - (avg_pnl * avg_pnl))
+        std = math.sqrt(variance)
+        sharpe_unit = avg_pnl / std if std > 0 else (999.0 if avg_pnl > 0 else 0.0)
+        return {
+            "win_rate": win_rate,
+            "avg_pnl": avg_pnl,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "reward_risk": reward_risk,
+            "sharpe_unit": sharpe_unit,
+        }
+
+    def _quality_skip_reason(self, state: TokenLearningState) -> str:
+        if state.trades < self.MIN_QUALITY_TRADES:
+            return ""
+        metrics = self._quality_metrics(state)
+        reasons = []
+        if metrics["avg_pnl"] <= self.MIN_HISTORICAL_EXPECTANCY:
+            reasons.append(f"expectancy {metrics['avg_pnl']:.5f} <= {self.MIN_HISTORICAL_EXPECTANCY:.5f}")
+        if metrics["win_rate"] < self.MIN_HISTORICAL_WIN_RATE:
+            reasons.append(f"win_rate {metrics['win_rate']:.1%} < {self.MIN_HISTORICAL_WIN_RATE:.1%}")
+        if metrics["reward_risk"] < self.MIN_HISTORICAL_REWARD_RISK:
+            reasons.append(f"reward:risk {metrics['reward_risk']:.2f} < {self.MIN_HISTORICAL_REWARD_RISK:.2f}")
+        if metrics["sharpe_unit"] < self.MIN_HISTORICAL_SHARPE_UNIT:
+            reasons.append(f"sharpe_unit {metrics['sharpe_unit']:.3f} < {self.MIN_HISTORICAL_SHARPE_UNIT:.3f}")
+        return "; ".join(reasons)
 
     def score_candidate(self, candidate) -> AdjustedCandidate:
         symbol = candidate.symbol
@@ -113,12 +163,31 @@ class ScannerLearning:
                 state=state,
             )
 
+        quality_skip = self._quality_skip_reason(state)
+        if quality_skip:
+            return AdjustedCandidate(
+                symbol=symbol,
+                market_score=market_score,
+                learning_score=-market_score,
+                final_score=0.0,
+                cooldown_active=True,
+                skip_reason=f"quality gate: {quality_skip}",
+                state=state,
+            )
+
         learning_score = 0.0
         if state.trades:
-            win_rate = state.wins / state.trades
-            avg_pnl = state.total_pnl / state.trades
-            learning_score += (win_rate - 0.5) * 0.25
-            learning_score += max(-0.25, min(0.25, avg_pnl))
+            metrics = self._quality_metrics(state)
+            win_rate = metrics["win_rate"]
+            avg_pnl = metrics["avg_pnl"]
+            if state.trades < self.MIN_QUALITY_TRADES:
+                learning_score += (win_rate - 0.5) * 0.25
+                learning_score += max(-0.15, min(0.15, avg_pnl))
+            else:
+                learning_score += (win_rate - 0.5) * 0.35
+                learning_score += max(-0.35, min(0.35, avg_pnl * 8.0))
+                learning_score += max(-0.20, min(0.20, (metrics["reward_risk"] - self.MIN_HISTORICAL_REWARD_RISK) * 0.08))
+                learning_score += max(-0.20, min(0.20, metrics["sharpe_unit"] * 0.08))
             learning_score -= min(0.45, state.recent_failures * 0.15)
             if state.wins and state.avg_duration_seconds and state.avg_duration_seconds <= 120:
                 learning_score += 0.10
@@ -139,10 +208,11 @@ class ScannerLearning:
             return
         try:
             raw = json.loads(self.state_path.read_text())
-            self.states = {
-                symbol: TokenLearningState(**values)
-                for symbol, values in raw.get("states", {}).items()
-            }
+            self.states = {}
+            for symbol, values in raw.get("states", {}).items():
+                allowed = TokenLearningState.__dataclass_fields__.keys()
+                clean = {key: value for key, value in values.items() if key in allowed}
+                self.states[symbol] = TokenLearningState(**clean)
         except Exception:
             self.states = {}
 

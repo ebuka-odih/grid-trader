@@ -30,7 +30,8 @@ from config import (
 )
 from coin_scanner import CoinScanner, CoinScore
 from dry_run_engine import DryRunEngine
-from trading_agent import TradingAgent, PreTradeDecision, MidTradeDecision
+from trading_agent import PreTradeDecision, MidTradeDecision
+from rule_agent import RuleBasedAgent
 from improvement_loop import ImprovementLoop
 from telegram_alerter import TelegramAlerter
 from grid_engine import GridEngine
@@ -71,7 +72,7 @@ class AgenticOrchestrator:
     def __init__(self):
         self.scanner = CoinScanner()
         self.engine = DryRunEngine()
-        self.agent = TradingAgent()
+        self.agent = RuleBasedAgent()
         self.journal = ImprovementLoop(db_path="sqlite:///agentic_trades.db")
         self.alerter = TelegramAlerter()
         self.grid_calc = GridEngine()

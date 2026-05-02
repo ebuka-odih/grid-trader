@@ -19,9 +19,8 @@ MARGIN_TYPE = os.getenv("MARGIN_TYPE", "cross")  # "cross" or "isolated"
 # $100 wallet, $10/order, 50x leverage, 10 concurrent grids
 INITIAL_WALLET_BALANCE = float(os.getenv("INITIAL_WALLET_BALANCE", "100.0"))
 BASE_ORDER_SIZE_USDT = float(os.getenv("BASE_ORDER_SIZE_USDT", "10.0"))
-MAX_CONCURRENT_GRIDS = int(os.getenv("MAX_CONCURRENT_GRIDS", "10"))
 # Allow aggressive portfolio exposure for dry-run testing
-MAX_TOTAL_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", "95"))
+MAX_TOTAL_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", "60"))
 TOKEN_PROFILES_PATH = os.getenv("TOKEN_PROFILES_PATH", "token_profiles.json")
 
 # --- Grid Strategy (defaults, overridden by token_profiles.json) ---
@@ -32,7 +31,7 @@ MAX_SAFE_LEVERAGE = int(os.getenv("MAX_SAFE_LEVERAGE", "100"))
 DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "50"))
 DEFAULT_LEVERAGE = max(MIN_SAFE_LEVERAGE, min(MAX_SAFE_LEVERAGE, DEFAULT_LEVERAGE))
 DEFAULT_NUM_GRIDS = int(os.getenv("DEFAULT_NUM_GRIDS", "10"))
-MAX_TRADE_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", "2.0"))
+MAX_TRADE_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", "10.0"))
 MIN_ORDER_SIZE_USDT = float(os.getenv("MIN_ORDER_SIZE_USDT", "0.1"))
 # Static dollar targets are retained only as a safety fallback.
 # Fast-grid exits should use percentage targets against margin allocated.
@@ -63,12 +62,12 @@ MAX_ATR_PCT = float(os.getenv("MAX_ATR_PCT", "3.0"))
 MIN_MEAN_REVERSION = float(os.getenv("MIN_MEAN_REVERSION", "0.3"))
 
 # --- Blacklist (now loaded from token_profiles.json, this is fallback) ---
-COIN_BLACKLIST = os.getenv("COIN_BLACKLIST", "BTC,ETH,SOL,BNB,XRP,ADA,AVAX,LINK,DOT,LTC,BCH,TRX,TON,RAVE,GALA,PEOPLE,BLUR,ACE,NIL")
+COIN_BLACKLIST = os.getenv("COIN_BLACKLIST", "")  # No blacklist — all coins tradeable
 
 # --- Portfolio Risk (cross-margin) ---
-MAX_TOTAL_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", "80"))
+MAX_TOTAL_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", "60"))
 MAX_SINGLE_DIRECTION_EXPOSURE_PCT = float(os.getenv("MAX_SINGLE_DIRECTION_EXPOSURE_PCT", "50"))
-MAX_TRADE_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", str(MAX_TRADE_WALLET_EXPOSURE_PCT)))
+MAX_TRADE_WALLET_EXPOSURE_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", "5.0"))
 PORTFOLIO_RESERVE_PCT = float(os.getenv("PORTFOLIO_RESERVE_PCT", "20"))
 EMERGENCY_LIQUIDATION_BUFFER_PCT = float(os.getenv("EMERGENCY_LIQUIDATION_BUFFER_PCT", "10"))
 RISK_CHECK_INTERVAL_SECONDS = int(os.getenv("RISK_CHECK_INTERVAL_SECONDS", "30"))
@@ -83,7 +82,7 @@ TRADING_AGENT_FALLBACK_MODEL = os.getenv("TRADING_AGENT_FALLBACK_MODEL", "meta/l
 AGENT_MID_TRADE_INTERVAL = int(os.getenv("AGENT_MID_TRADE_INTERVAL", "120"))
 
 # --- Multi-Grid Mode ---
-MAX_CONCURRENT_GRIDS = int(os.getenv("MAX_CONCURRENT_GRIDS", "45"))
+MAX_CONCURRENT_GRIDS = int(os.getenv("MAX_CONCURRENT_GRIDS", "50"))
 MID_TRADE_CHECK_INTERVAL = int(os.getenv("MID_TRADE_CHECK_INTERVAL", "120"))
 GRID_MONITOR_TIMEOUT = int(os.getenv("GRID_MONITOR_TIMEOUT", "1800"))
 SCANNER_TOP_N_PORTFOLIO = int(os.getenv("SCANNER_TOP_N_PORTFOLIO", "30"))

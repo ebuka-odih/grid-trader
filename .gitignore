@@ -16,3 +16,9 @@ dry_run.log
 agentic_run.log
 scanner_learning_state.json
 archive/
+
+# Safety: backup/broken files
+*.bak*
+*.broken*
+*.backup
+data/

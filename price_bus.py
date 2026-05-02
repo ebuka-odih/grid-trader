@@ -1,5 +1,4 @@
-"""
-Shared WebSocket Price Bus for high-speed multi-grid dry-run execution.
+"""Shared WebSocket Price Bus for high-speed multi-grid dry-run execution.
 
 Instead of opening one Bybit public WebSocket per grid, the manager owns one
 PriceBus. Grids subscribe to symbol queues and receive fan-out price ticks from
@@ -181,10 +180,16 @@ class PriceBus:
 
     async def _send_unsubscribe(self, symbol: str):
         ws_symbol = symbol_to_ws_symbol(symbol)
-        if not self._ws or ws_symbol not in self._subscribed_ws_symbols:
+        if ws_symbol not in self._subscribed_ws_symbols:
             return
-        await self._ws.send(json.dumps({"op": "unsubscribe", "args": [f"tickers.{ws_symbol}"]}))
         self._subscribed_ws_symbols.discard(ws_symbol)
+        if not self._ws:
+            return
+        try:
+            await self._ws.send(json.dumps({"op": "unsubscribe", "args": [f"tickers.{ws_symbol}"]}))
+        except Exception:
+            # Socket already dead — that's fine, unsubscribe is best-effort
+            pass
         logger.info(f"📡 Price bus unsubscribed: {symbol}")
 
     async def _run(self):
@@ -193,7 +198,9 @@ class PriceBus:
                 async with websockets.connect(
                     self.ws_url,
                     ping_interval=20,
-                    ping_timeout=10,
+                    ping_timeout=20,
+                    close_timeout=5,
+                    max_size=2**20,
                 ) as ws:
                     self._ws = ws
                     self._health_status["ws_connected"] = True
