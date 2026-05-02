@@ -74,15 +74,21 @@ class RuleBasedAgent:
             self._log_decision("mid_trade", decision, grid_status)
             return decision
 
-        # Rule 2: Big loss → close
-        if total_pnl < -grid_range * 0.05:
-            decision = MidTradeDecision(
-                action="close",
-                reasoning=f"PnL ${total_pnl:.2f} below threshold, closing",
-                confidence=0.9,
-            )
-            self._log_decision("mid_trade", decision, grid_status)
-            return decision
+        # Rule 2: Big loss → close (use allocated margin, not grid range)
+        # Grid range is price-based and meaningless for cheap tokens
+        allocated_margin = grid_status.get("allocated_margin", 0)
+        if allocated_margin > 0 and total_pnl < -allocated_margin * 0.05:
+            # Only close if loss > 5% of allocated margin AND we've held long enough
+            age_seconds = grid_status.get("age_seconds", 0)
+            fills = grid_status.get("fills", 0)
+            if age_seconds > 1800 and fills >= 5:  # 30min minimum, 5+ fills
+                decision = MidTradeDecision(
+                    action="close",
+                    reasoning=f"PnL ${total_pnl:.2f} below 5% margin threshold (${allocated_margin * 0.05:.2f}), held {age_seconds/60:.0f}min with {fills} fills",
+                    confidence=0.9,
+                )
+                self._log_decision("mid_trade", decision, grid_status)
+                return decision
 
         # Rule 3: Low activity → tighten
         if fills < 3 and fills > 0:

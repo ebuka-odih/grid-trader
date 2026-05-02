@@ -151,7 +151,7 @@ logger = logging.getLogger("multi_grid_manager")
 
 from config import MAX_CONCURRENT_GRIDS
 
-MID_TRADE_CHECK_INTERVAL = 120
+MID_TRADE_CHECK_INTERVAL = 300  # 5 minutes between agent checks (was 2min)
 
 GRID_MONITOR_TIMEOUT = 1800
 
@@ -179,7 +179,7 @@ MIN_GRID_ORDER_SIZE_USDT = float(os.getenv("MIN_ORDER_SIZE_USDT", str(MIN_ORDER_
 
 # Slot hygiene: free dead slots instead of letting stale/no-trade tokens sit for hours.
 NO_FILL_GRID_TIMEOUT_SECONDS = int(os.getenv("NO_FILL_GRID_TIMEOUT_SECONDS", "900"))  # 15m with no fills
-LOSING_STAGNANT_TIMEOUT_SECONDS = int(os.getenv("LOSING_STAGNANT_TIMEOUT_SECONDS", "1200"))  # 20m losing + no progress
+LOSING_STAGNANT_TIMEOUT_SECONDS = int(os.getenv("LOSING_STAGNANT_TIMEOUT_SECONDS", "1800"))  # 30m losing + no progress (was 20m)
 STAGNANT_GRID_TIMEOUT_SECONDS = int(os.getenv("STAGNANT_GRID_TIMEOUT_SECONDS", "2400"))  # 40m no meaningful progress
 MIN_PROGRESS_PRICE_MOVE_PCT = float(os.getenv("MIN_PROGRESS_PRICE_MOVE_PCT", "0.03"))
 MIN_PROGRESS_PNL_MOVE_USDT = float(os.getenv("MIN_PROGRESS_PNL_MOVE_USDT", "0.01"))
@@ -1893,9 +1893,9 @@ class MultiGridManager:
 
 
 
-                # LLM mid-trade check
-
-                if now - last_agent_check >= MID_TRADE_CHECK_INTERVAL:
+                # LLM mid-trade check (skip if grid < 10min old — let it work)
+                grid_age_seconds = now - slot.started_at
+                if now - last_agent_check >= MID_TRADE_CHECK_INTERVAL and grid_age_seconds >= 600:
 
                     try:
 
@@ -1906,6 +1906,8 @@ class MultiGridManager:
                         grid_status["portfolio_wallet"] = self.wallet_tracker.get_wallet_state()
 
                         grid_status["token_profile"] = slot.token_profile
+                        grid_status["allocated_margin"] = slot.allocated_margin if hasattr(slot, 'allocated_margin') else 0
+                        grid_status["age_seconds"] = now - slot.started_at
 
                         if slot.agent:
                             mid_decision = slot.agent.decide_mid_trade(grid_status)
