@@ -117,12 +117,18 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             is_active=True,
         )
 
-        event = engine.on_price_update(90.0)
+        # Margin-based hard floor + scale-out: first breach halves the
+        # position (returns "partial_close"), keeping the grid alive for
+        # recovery. A subsequent breach below the floor closes the rest.
+        first = engine.on_price_update(90.0)
+        self.assertEqual(first, "partial_close")
+        self.assertTrue(engine.state.is_active)
+        self.assertTrue(engine.state.position.scaled_out)
 
-        # Deep drawdown now triggers close via check_close_conditions
-        self.assertEqual(event, "drawdown")
+        second = engine.on_price_update(85.0)
+        self.assertEqual(second, "drawdown")
         self.assertFalse(engine.state.is_active)
-        self.assertLess(engine.state.position.unrealized_pnl, 0)
+        self.assertLess(engine.state.position.realized_pnl, 0)
 
     def test_dry_run_drawdown_closes_before_hold_warning(self):
         engine = DryRunEngine()
@@ -148,9 +154,12 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             is_active=True,
         )
 
-        # Deep drawdown now closes the position via check_close_conditions
-        event = engine.on_price_update(90.0)
-        self.assertEqual(event, "drawdown")
+        # First deep-drawdown tick scales out half (kept alive for recovery).
+        # A second breach closes the rest as drawdown.
+        first = engine.on_price_update(90.0)
+        self.assertEqual(first, "partial_close")
+        second = engine.on_price_update(85.0)
+        self.assertEqual(second, "drawdown")
         self.assertFalse(engine.state.is_active)
 
     def test_heartbeat_holds_stale_negative_position_instead_of_cancelling(self):

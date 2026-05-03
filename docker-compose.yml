@@ -8,22 +8,19 @@ services:
     env_file:
       - .env
     environment:
-      GRID_TRADER_STATE_FILE: /host-tmp/grid_trader_state.json
-      GRID_TRADER_TEST_STATE_FILE: /host-tmp/grid_trader_test_state.json
-      GRID_TRADER_MANAGER_LOCK_FILE: /host-tmp/grid_trader_manager.lock
-      GRID_TRADER_DB_FILE: /app/grid-trader/multi_grid_trades.db
+      GRID_TRADER_STATE_FILE: /data/grid_trader_state.json
+      GRID_TRADER_TEST_STATE_FILE: /data/grid_trader_test_state.json
+      GRID_TRADER_MANAGER_LOCK_FILE: /data/grid_trader_manager.lock
+      GRID_TRADER_DB_FILE: /data/multi_grid_trades.db
       GRID_TRADER_UI_DIR: /app/frontend_dist
       GRID_TRADER_UI_DIST_DIR: /app/frontend_dist
-      HUMMINGBOT_HOME: /app/hummingbot-home
+      HUMMINGBOT_HOME: /data/hummingbot
       PYTHONUNBUFFERED: "1"
     ports:
       - "8765:8765"
     volumes:
+      - grid_trader_data:/data
       - grid_trader_logs:/app/logs
-      # Mount the project directory so grid_api reads host's live state + DB
-      - /home/forge1/.hermes/projects/grid-trader:/app/grid-trader:ro
-      - /tmp:/host-tmp:ro
-      - /home/forge1/.hummingbot:/app/hummingbot-home:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/api/state"]
       interval: 30s
@@ -33,4 +30,5 @@ services:
     stop_grace_period: 30s
 
 volumes:
+  grid_trader_data:
   grid_trader_logs:

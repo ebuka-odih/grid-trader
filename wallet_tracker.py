@@ -50,6 +50,25 @@ class WalletTracker:
 
         logger.info(f"💰 Wallet Tracker initialized | balance=${initial_balance:.2f} | mode=dry-run")
 
+    def restore_realized_pnl(self, pnl_total: float):
+        """
+        Seed accumulated realized PnL at startup (e.g. from the trades DB).
+
+        Container restarts must not wipe wallet gains/losses: this call lets
+        the manager replay the closed-trade total onto a fresh tracker so the
+        balance reflects history even when the in-memory state was lost.
+        """
+        if pnl_total == 0:
+            return
+        self._balance += pnl_total
+        self._realized_pnl_total += pnl_total
+        # Single bucket entry — we do not have per-trade history here, just totals.
+        self._realized_pnls.append(pnl_total)
+        logger.info(
+            f"💰 Wallet restored from DB | replayed_pnl=${pnl_total:+.4f} → "
+            f"balance=${self._balance:.2f} (initial ${self.initial_balance:.2f})"
+        )
+
     # ── Position Management ───────────────────────────────────
 
     def update_position(

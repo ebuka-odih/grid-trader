@@ -25,10 +25,54 @@ from grid_core import (
     GridPosition, FillEvent, PnLResult, CycleState, GridImbalance,
     SmartCloseEngine, SmartCloseConfig, CloseReason,
     process_fill, check_close_conditions, reset_position, reset_imbalance,
+    perform_partial_close,
     allocated_margin_usdt,
 )
 
 logger = logging.getLogger("live_engine")
+
+
+def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
+    """Build a SmartCloseConfig from env vars, allowing kwarg overrides."""
+    def _f(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    cfg = SmartCloseConfig(
+        time_decay_hours=_f("SMART_CLOSE_TIME_DECAY_HOURS", 4.0),
+        time_decay_min_loss_pct=_f("SMART_CLOSE_TIME_DECAY_MIN_LOSS_PCT", 1.0),
+        momentum_threshold_pct=_f("SMART_CLOSE_MOMENTUM_THRESHOLD_PCT", 2.5),
+        momentum_window_sec=_f("SMART_CLOSE_MOMENTUM_WINDOW_SEC", 60.0),
+        imbalance_ratio_threshold=_f("SMART_CLOSE_IMBALANCE_RATIO", 3.5),
+        imbalance_min_fills=int(_f("SMART_CLOSE_IMBALANCE_MIN_FILLS", 8)),
+        trailing_stop_initial_pct=_f("SMART_CLOSE_TRAILING_INITIAL_PCT", 3.5),
+        trailing_stop_tightened_pct=_f("SMART_CLOSE_TRAILING_TIGHTENED_PCT", 2.5),
+        trailing_stop_tighten_hours=_f("SMART_CLOSE_TRAILING_TIGHTEN_HOURS", 4.0),
+        recovery_min_depth_pct=_f("SMART_CLOSE_RECOVERY_MIN_DEPTH_PCT", 1.5),
+        recovery_max_hours=_f("SMART_CLOSE_RECOVERY_MAX_HOURS", 6.0),
+        min_seconds_since_last_fill=_f("SMART_CLOSE_POST_FILL_COOLDOWN_SEC", 180.0),
+        recovery_window_sec=_f("SMART_CLOSE_RECOVERY_WINDOW_SEC", 300.0),
+        recovery_partial_pct=_f("SMART_CLOSE_RECOVERY_PARTIAL_PCT", 30.0),
+        hard_loss_pct_floor=_f("HARD_FLOOR_BASE_PCT", 20.0),
+        hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 15.0),
+        hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 30.0),
+        scale_out_fraction=_f("SCALE_OUT_FRACTION", 0.5),
+        tp_floor_pct=_f("DYNAMIC_TP_FLOOR_PCT", 3.0),
+        tp_min_age_full_target_min=_f("DYNAMIC_TP_FULL_TARGET_MIN", 10.0),
+        tp_decay_step_pct=_f("DYNAMIC_TP_DECAY_STEP_PCT", 2.0),
+        tp_decay_to_zero_at_min=_f("DYNAMIC_TP_DECAY_TO_ZERO_MIN", 30.0),
+        tp_dust_floor_usdt=_f("DYNAMIC_TP_DUST_FLOOR_USDT", 0.05),
+        tp_momentum_max_age_min=_f("DYNAMIC_TP_MOMENTUM_MAX_AGE_MIN", 30.0),
+        tp_momentum_velocity_pct_per_min=_f("DYNAMIC_TP_MOMENTUM_VELOCITY_PCT_PER_MIN", 1.5),
+        tp_momentum_extend_max_pct=_f("DYNAMIC_TP_MOMENTUM_EXTEND_MAX_PCT", 5.0),
+        tp_momentum_trailing_giveback_pct=_f("DYNAMIC_TP_TRAILING_GIVEBACK_PCT", 0.5),
+        tp_min_fills=int(_f("DYNAMIC_TP_MIN_FILLS", 2)),
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return cfg
 
 
 @dataclass
@@ -48,6 +92,8 @@ class LiveState:
     imbalance: GridImbalance = field(default_factory=GridImbalance)
     # Cycle tracking
     max_cycles: int = 1
+    # ATR % at deploy (frozen — drives ATR-bucketed hard floor)
+    atr_pct: float = 0.0
 
 
 class LiveEngine:
@@ -66,7 +112,9 @@ class LiveEngine:
         self._grid_engine: Optional[GridEngine] = None
         self._adaptive: Optional[AdaptiveGrid] = None
         self._cycle_state = CycleState(max_cycles=max_cycles)
-        self._smart_close = SmartCloseEngine(smart_close_config or SmartCloseConfig())
+        self._smart_close = SmartCloseEngine(
+            smart_close_config or _smart_close_config_from_env()
+        )
         
         # WebSocket fill queue
         self._fill_queue: asyncio.Queue = asyncio.Queue()
@@ -89,6 +137,7 @@ class LiveEngine:
             started_at=time.time(),
             current_price=coin_score.price,
             max_cycles=self._cycle_state.max_cycles,
+            atr_pct=getattr(coin_score, "atr_pct", 0.0),
         )
         
         self._adaptive = AdaptiveGrid(
@@ -144,20 +193,35 @@ class LiveEngine:
             self.state.grid.order_size_usdt, self.state.grid.num_grids
         )
         
+        # `check_close_conditions` is configured with HIGH for both target args
+        # so `should_close` only fires as the upper-ceiling backstop. Dynamic
+        # take-profit handles every close below that ceiling.
         pnl_result = check_close_conditions(
             position=self.state.position,
             current_price=price,
             allocated_margin=margin,
-            target_pnl_pct_low=TARGET_PNL_PCT_LOW,
-            target_pnl_pct_high=4.0,  # From config
+            target_pnl_pct_low=8.0,
+            target_pnl_pct_high=8.0,
             max_drawdown_pct=MAX_DRAWDOWN_PCT,
             total_fills=len(self.state.fills),
         )
-        
+
+        # ── Dynamic take-profit ──
+        if pnl_result.total_pnl > 0 and not self.state.position.is_flat:
+            tp_reason = self._smart_close.evaluate_take_profit(
+                position=self.state.position,
+                current_price=price,
+                allocated_margin=margin,
+                total_pnl=pnl_result.total_pnl,
+                total_fills=len(self.state.fills),
+            )
+            if tp_reason:
+                return await self._handle_close(tp_reason.value, pnl_result.total_pnl)
+
         if pnl_result.should_close:
             return await self._handle_close(pnl_result.close_reason, pnl_result.total_pnl)
-        
-        # ── Smart close on losing positions ──
+
+        # ── Smart close on losing positions (drawdown routed through too) ──
         if not self.state.position.is_flat and pnl_result.total_pnl < 0:
             smart_reason = self._smart_close.check_smart_close(
                 position=self.state.position,
@@ -165,11 +229,30 @@ class LiveEngine:
                 allocated_margin=margin,
                 imbalance=self.state.imbalance,
                 total_fills=len(self.state.fills),
+                drawdown_breached=pnl_result.drawdown_breached,
+                atr_pct=self.state.atr_pct,
             )
+            if smart_reason == CloseReason.PARTIAL_CLOSE:
+                # Live scale-out requires a reduce-only exchange order which
+                # has not been plumbed through grid_engine yet. Until that's
+                # in place, fall through to a full close in live mode so
+                # internal state stays in lockstep with the exchange. The
+                # dry-run path uses the in-memory perform_partial_close.
+                # TODO: wire grid_engine.place_reduce_only_market(symbol,
+                # opposite_side, qty) here, then call perform_partial_close
+                # for the in-memory mirror.
+                logger.warning(
+                    f"⚖️  LIVE SCALE-OUT not yet wired to exchange — "
+                    f"closing fully (PnL=${pnl_result.total_pnl:.4f})"
+                )
+                return await self._handle_close(
+                    CloseReason.DRAWDOWN.value, pnl_result.total_pnl
+                )
             if smart_reason:
                 logger.info(
                     f"🧠 LIVE SMART CLOSE: {smart_reason.value} | "
-                    f"PnL=${pnl_result.total_pnl:.4f}"
+                    f"PnL=${pnl_result.total_pnl:.4f} | "
+                    f"dd_breached={pnl_result.drawdown_breached}"
                 )
                 return await self._handle_close(smart_reason.value, pnl_result.total_pnl)
         
@@ -303,8 +386,10 @@ class LiveEngine:
         
         reset_position(self.state.position)
         reset_imbalance(self.state.imbalance)
+        self._smart_close.reset_recovery()
+        self._smart_close.reset_tp_peak()
         self.state.filled_levels.clear()
-        
+
         if self._adaptive:
             self._adaptive.exposure_cap.exposure.buy_fills = 0
             self._adaptive.exposure_cap.exposure.sell_fills = 0

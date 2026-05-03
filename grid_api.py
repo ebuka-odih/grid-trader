@@ -86,6 +86,7 @@ DEFAULT_STATE: dict = {
     "slots": {},              # slot_id -> slot data
     "completed_trades": [],   # last 50 closed trades
     "scanner_candidates": [], # top 10 scanner picks
+    "events": [],             # recent backend events for the dashboard log panel
     "heartbeat": {
         "active": 0,
         "stale": 0,
@@ -255,6 +256,11 @@ def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        existing_cols = {r[1] for r in cursor.execute("PRAGMA table_info(grid_cycles)").fetchall()}
+        order_size_expr = (
+            "adjusted_order_size" if "adjusted_order_size" in existing_cols
+            else "0.0 AS adjusted_order_size"
+        )
         # Only count trades with actual fills (exclude no_fills_timeout, price_bus_error, etc.)
         cursor.execute("SELECT COUNT(*) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0")
         total_trades = int(cursor.fetchone()[0] or 0)
@@ -264,34 +270,42 @@ def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
         cursor.execute("SELECT COALESCE(SUM(total_pnl), 0) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0")
         total_pnl = float(cursor.fetchone()[0] or 0.0)
         win_rate = (wins / total_trades * 100) if total_trades else 0.0
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT grid_id, symbol, started_at, closed_at, close_reason,
                    total_pnl, realized_pnl, fills_count, duration_seconds,
-                   upper_price, lower_price, num_grids, leverage, was_profitable
+                   upper_price, lower_price, num_grids, leverage, was_profitable,
+                   {order_size_expr}
             FROM grid_cycles
             WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0
             ORDER BY closed_at DESC
             LIMIT ?
         """, (limit,))
-        trades = [
-            {
+        trades = []
+        for row in cursor.fetchall():
+            order_size = float(row["adjusted_order_size"] or 0.0)
+            num_grids = int(row["num_grids"] or 0)
+            allocated_margin = order_size * num_grids
+            total_pnl = float(row["total_pnl"] or 0.0)
+            profit_pct = (total_pnl / allocated_margin * 100) if allocated_margin > 0 else 0.0
+            trades.append({
                 "slot_id": row["grid_id"],
                 "symbol": row["symbol"],
                 "started_at": row["started_at"],
                 "closed_at": row["closed_at"],
                 "close_reason": row["close_reason"],
-                "total_pnl": row["total_pnl"] or 0.0,
+                "total_pnl": total_pnl,
                 "realized_pnl": row["realized_pnl"] or 0.0,
                 "fills_count": row["fills_count"] or 0,
                 "duration_seconds": row["duration_seconds"] or 0,
                 "upper_price": row["upper_price"] or 0.0,
                 "lower_price": row["lower_price"] or 0.0,
-                "num_grids": row["num_grids"] or 0,
+                "num_grids": num_grids,
                 "leverage": row["leverage"] or 0,
                 "was_profitable": bool(row["was_profitable"]),
-            }
-            for row in cursor.fetchall()
-        ]
+                "order_size": order_size,
+                "allocated_margin": allocated_margin,
+                "profit_percentage": round(profit_pct, 2),
+            })
         conn.close()
         return {
             "total_trades": total_trades,
@@ -329,6 +343,9 @@ def _coerce_state(raw: dict | None) -> dict:
 
     scanner_candidates = raw.get("scanner_candidates")
     normalized["scanner_candidates"] = scanner_candidates if isinstance(scanner_candidates, list) else []
+
+    events = raw.get("events")
+    normalized["events"] = events if isinstance(events, list) else []
 
     current_prices = raw.get("current_prices")
     normalized["current_prices"] = current_prices if isinstance(current_prices, dict) else {}

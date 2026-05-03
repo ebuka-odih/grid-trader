@@ -142,6 +142,58 @@ logging.basicConfig(
 logger = logging.getLogger("multi_grid_manager")
 
 
+# ── Event ring buffer for the dashboard log panel ────────────────
+# Captures logger records whose message contains one of the signal emojis
+# we use across the engine (smart-close, scale-out, recovery, wallet, etc).
+# Buffer is read from `_push_api_state` and surfaced to the frontend.
+from collections import deque  # noqa: E402
+
+_EVENT_BUFFER: deque = deque(maxlen=200)
+_EVENT_SIGNAL_PATTERNS = (
+    "🛑", "🎯", "🩹", "⚖️", "💰", "⏱",      # core trade-management events
+    "🧠", "🤖", "📉", "📈", "📊",            # smart-close + scanner
+    "🔄", "❄️", "⚡",                         # recenter, freeze, spike
+    "🧪", "🔴", "✅", "❌",                    # cycle / live / close-result
+    "🧹", "⏰",                                # stagnation, timeout
+    "🏗️",                                     # init
+    "DRY FILL", "LIVE FILL",                  # fills
+    "Wallet restored", "Runtime",             # startup
+    "GRID CLOSED", "GRID OPEN",               # legacy markers
+)
+
+
+class _EventBufferHandler(logging.Handler):
+    """Capture INFO+/WARNING+ logs that match any signal pattern."""
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = record.getMessage()
+            if record.levelno < logging.INFO:
+                return
+            if not any(p in msg for p in _EVENT_SIGNAL_PATTERNS):
+                return
+            _EVENT_BUFFER.append({
+                "ts": time.time(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": msg,
+            })
+        except Exception:
+            pass
+
+
+_event_handler = _EventBufferHandler()
+_event_handler.setLevel(logging.INFO)
+logging.getLogger().addHandler(_event_handler)
+
+
+def _drain_recent_events(limit: int = 50) -> list:
+    """Return the most recent events (newest first)."""
+    if not _EVENT_BUFFER:
+        return []
+    items = list(_EVENT_BUFFER)
+    return items[-limit:][::-1]
+
+
 
 
 
@@ -556,17 +608,83 @@ class MultiGridManager:
 
         self._completed_trades: list[dict] = []
 
-
+        # Restore wallet + cumulative stats from the closed-trade DB so that a
+        # container rebuild does not wipe accumulated PnL (only the in-memory
+        # objects reset; the DB on the persistent volume keeps the truth).
+        self._restore_wallet_from_db()
 
         logger.info(
 
             f"🏗️ Multi-Grid Manager v2 initialized | max_grids={max_grids} | "
 
-            f"margin={MARGIN_TYPE} | wallet=${INITIAL_WALLET_BALANCE:.2f} | "
+            f"margin={MARGIN_TYPE} | wallet=${self.wallet_tracker.get_balance():.2f} | "
 
             f"risk_monitor=active"
 
         )
+
+    def _session_start_file(self) -> str:
+        """Path of the persisted session-start marker."""
+        state_file = os.getenv("GRID_TRADER_STATE_FILE", "/tmp/grid_trader_state.json")
+        return os.path.join(os.path.dirname(state_file) or ".", "grid_trader_session.json")
+
+    def _restore_session_start(self) -> float:
+        """
+        Return the persisted session-start timestamp so the dashboard runtime
+        survives container restarts. Creates the marker file on first run.
+        Honours an env reset: setting GRID_TRADER_RESET_RUNTIME=1 forces a
+        fresh start (file is rewritten with the current time).
+        """
+        path = self._session_start_file()
+        if os.getenv("GRID_TRADER_RESET_RUNTIME", "0") == "1":
+            ts = time.time()
+            self._write_session_start(path, ts)
+            logger.info(f"⏱  Runtime reset (env): session_start={ts}")
+            return ts
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    payload = json.load(f)
+                ts = float(payload.get("started_at") or 0.0)
+                if ts > 0:
+                    age_h = (time.time() - ts) / 3600
+                    logger.info(f"⏱  Runtime restored: session_start={ts} (age={age_h:.1f}h)")
+                    return ts
+        except Exception as e:
+            logger.warning(f"Could not read session-start file: {e}")
+        ts = time.time()
+        self._write_session_start(path, ts)
+        logger.info(f"⏱  Runtime fresh: session_start={ts}")
+        return ts
+
+    def _write_session_start(self, path: str, ts: float):
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"started_at": ts}, f)
+        except Exception as e:
+            logger.warning(f"Could not write session-start file: {e}")
+
+    def _restore_wallet_from_db(self):
+        """Replay closed-trade totals from the DB onto the fresh WalletTracker."""
+        try:
+            stats, _trades = _load_closed_trade_source_of_truth()
+        except Exception as e:
+            logger.warning(f"Wallet restore: could not read closed-trade DB: {e}")
+            return
+        if not stats:
+            return
+        total_pnl = float(stats.get("total_pnl") or 0.0)
+        total_trades = int(stats.get("total_trades") or 0)
+        wins = int(stats.get("wins") or 0)
+        losses = int(stats.get("losses") or 0)
+        if total_trades > 0:
+            self._total_trades = total_trades
+            self._total_pnl = total_pnl
+            self._wins = wins
+            self._losses = losses
+        if total_pnl != 0.0:
+            self.wallet_tracker.restore_realized_pnl(total_pnl)
 
 
 
@@ -623,7 +741,11 @@ class MultiGridManager:
 
 
         self._running = True
-        self._started_at = time.time()
+        # Use the persisted session start so the dashboard runtime survives
+        # container rebuilds. _restore_session_start() seeds it from disk on
+        # first start; subsequent starts read the same file.
+        if self._started_at is None:
+            self._started_at = self._restore_session_start()
         _push_api_state(self)
 
         # Handle SIGTERM for graceful shutdown (supervisor sends SIGTERM)
@@ -1831,21 +1953,47 @@ class MultiGridManager:
 
                 if stale_reason:
 
-                    logger.warning(
-
-                        f"🧹 [#{slot.slot_id}] Closing stagnant grid | reason={stale_reason} | "
-
-                        f"symbol={slot.symbol} | age={(now - start) / 60:.1f}m | "
-
-                        f"no_progress={(now - last_progress_time) / 60:.1f}m | "
-
-                        f"fills={current_fills} | pnl=${current_pnl:.4f} | price=${current_price:.6f}"
-
+                    # Don't realise a losing position via stagnation close.
+                    # The hard floor / time-decay / recovery window in the
+                    # smart-close engine already manage exits on losing
+                    # trades — trigger only if we're break-even or positive,
+                    # OR if we've blown through the hard cap.
+                    status = slot.engine.get_status()
+                    allocated = float(status.get("allocated_margin_usdt") or 0.0)
+                    loss_pct_margin = (
+                        (-current_pnl / allocated * 100) if allocated > 0 and current_pnl < 0 else 0.0
                     )
+                    hard_max_min = float(os.getenv("GRID_HARD_MAX_MINUTES", "240"))
+                    age_min = (now - start) / 60
 
-                    close_reason = stale_reason
+                    if (
+                        stale_reason == "losing_stagnant"
+                        and loss_pct_margin > 5.0
+                        and age_min < hard_max_min
+                    ):
+                        # Let smart-close handle it.
+                        if int(age_min) % 5 == 0:
+                            logger.warning(
+                                f"🧹 [#{slot.slot_id}] Stagnation close deferred — "
+                                f"loss={loss_pct_margin:.1f}% margin (age={age_min:.0f}m). "
+                                f"Smart close will manage exit."
+                            )
+                    else:
+                        logger.warning(
 
-                    break
+                            f"🧹 [#{slot.slot_id}] Closing stagnant grid | reason={stale_reason} | "
+
+                            f"symbol={slot.symbol} | age={age_min:.1f}m | "
+
+                            f"no_progress={(now - last_progress_time) / 60:.1f}m | "
+
+                            f"fills={current_fills} | pnl=${current_pnl:.4f} | price=${current_price:.6f}"
+
+                        )
+
+                        close_reason = stale_reason
+
+                        break
 
 
 
@@ -1949,11 +2097,34 @@ class MultiGridManager:
 
                 if now - start > profile_timeout_seconds:
 
-                    logger.warning(f"⏰ [#{slot.slot_id}] Grid timeout ({profile_timeout}min)")
+                    # Don't realise a big loss just because the clock ran
+                    # out. If the position is in significant loss, extend the
+                    # deadline up to GRID_HARD_MAX_MINUTES (env-tunable) so the
+                    # smart-close engine can manage exit (recovery window /
+                    # hard floor / time-decay all use margin-% loss).
+                    status = slot.engine.get_status()
+                    total_pnl = float(status.get("total_pnl") or 0.0)
+                    allocated = float(status.get("allocated_margin_usdt") or 0.0)
+                    loss_pct_margin = (-total_pnl / allocated * 100) if allocated > 0 and total_pnl < 0 else 0.0
+                    hard_max_min = float(os.getenv("GRID_HARD_MAX_MINUTES", "240"))
+                    age_min = (now - start) / 60
 
-                    close_reason = "timeout"
-
-                    break
+                    if loss_pct_margin > 5.0 and age_min < hard_max_min:
+                        # Losing > 5% margin and inside hard cap — let it
+                        # cook. Throttle the warning so we don't spam logs.
+                        if int(age_min) % 5 == 0:
+                            logger.warning(
+                                f"⏰ [#{slot.slot_id}] Profile timeout ({profile_timeout}m) "
+                                f"deferred — loss={loss_pct_margin:.1f}% margin (age={age_min:.0f}m, "
+                                f"hard_max={hard_max_min:.0f}m). Smart close will manage exit."
+                            )
+                    else:
+                        logger.warning(
+                            f"⏰ [#{slot.slot_id}] Grid timeout ({profile_timeout}m) "
+                            f"loss_margin={loss_pct_margin:.1f}% age={age_min:.0f}m"
+                        )
+                        close_reason = "timeout"
+                        break
 
 
 
@@ -2139,9 +2310,13 @@ class MultiGridManager:
 
 
 
-        # v2: Update wallet tracker — remove position, add realized PnL
-
-        self.wallet_tracker.remove_position(slot.symbol, realized_pnl=realized)
+        # v2: Update wallet tracker — remove position, add total PnL.
+        # `total_pnl` (= realized + unrealized at close) is the correct
+        # number to bank: when a grid stops, any open unrealized value
+        # represents the simulated exit at the closing price. Previously
+        # only `realized` was banked, which dropped the unrealized portion
+        # and produced a small drift between wallet.balance and stats.total_pnl.
+        self.wallet_tracker.remove_position(slot.symbol, realized_pnl=total_pnl)
 
 
 
@@ -2467,6 +2642,13 @@ def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
         conn = sqlite3.connect(TRADE_DB_FILE)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        # Schema may pre-date the `adjusted_order_size` column on older DBs;
+        # fall back to a literal so the query still succeeds.
+        existing_cols = {r[1] for r in cur.execute("PRAGMA table_info(grid_cycles)").fetchall()}
+        order_size_expr = (
+            "adjusted_order_size" if "adjusted_order_size" in existing_cols
+            else "0.0 AS adjusted_order_size"
+        )
         row = cur.execute(
             """
             SELECT COUNT(*) AS total_trades,
@@ -2488,16 +2670,22 @@ def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
         }
         trades = []
         for r in cur.execute(
-            """
+            f"""
             SELECT grid_id, symbol, started_at, closed_at, close_reason,
                    total_pnl, realized_pnl, fills_count, duration_seconds,
-                   upper_price, lower_price, num_grids, leverage, was_profitable
+                   upper_price, lower_price, num_grids, leverage, was_profitable,
+                   {order_size_expr}
             FROM grid_cycles
             WHERE closed_at IS NOT NULL
             ORDER BY closed_at DESC
             LIMIT 50
             """
         ).fetchall():
+            order_size = float(r["adjusted_order_size"] or 0.0)
+            num_grids = int(r["num_grids"] or 0)
+            allocated_margin = order_size * num_grids
+            total_pnl = float(r["total_pnl"] or 0.0)
+            profit_pct = (total_pnl / allocated_margin * 100) if allocated_margin > 0 else 0.0
             trades.append({
                 "slot_id": r["grid_id"],
                 "grid_id": r["grid_id"],
@@ -2506,15 +2694,18 @@ def _load_closed_trade_source_of_truth() -> tuple[dict, list[dict]]:
                 "started_at": r["started_at"],
                 "closed_at": r["closed_at"],
                 "close_reason": r["close_reason"],
-                "total_pnl": r["total_pnl"],
+                "total_pnl": total_pnl,
                 "realized_pnl": r["realized_pnl"],
                 "fills_count": r["fills_count"],
                 "duration_seconds": r["duration_seconds"],
                 "upper_price": r["upper_price"],
                 "lower_price": r["lower_price"],
-                "num_grids": r["num_grids"],
+                "num_grids": num_grids,
                 "leverage": r["leverage"],
                 "was_profitable": bool(r["was_profitable"]),
+                "order_size": order_size,
+                "allocated_margin": allocated_margin,
+                "profit_percentage": round(profit_pct, 2),
             })
         conn.close()
         return stats, trades
@@ -2575,6 +2766,7 @@ def _push_api_state(manager):
                 slot.symbol: slot.engine.get_status().get("current_price", 0)
                 for slot in manager.slots.values()
             },
+            "events": _drain_recent_events(50),
             "last_update": time.time(),
         }
         tmp_path = f"{BOT_STATE_FILE}.{os.getpid()}.tmp"

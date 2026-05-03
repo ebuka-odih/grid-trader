@@ -31,6 +31,8 @@ class GridPosition:
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
     opened_at: float = 0.0  # timestamp when position opened
+    last_fill_at: float = 0.0  # timestamp of most recent fill (for post-fill cooldown)
+    scaled_out: bool = False  # True after a partial-close at the hard floor
     
     @property
     def is_flat(self) -> bool:
@@ -80,6 +82,7 @@ class PnLResult:
     unrealized_pnl: float = 0.0
     target_usdt: float = 0.0
     drawdown_limit: float = 0.0
+    drawdown_breached: bool = False
 
 
 @dataclass
@@ -147,15 +150,51 @@ class CloseReason(Enum):
     GRID_IMBALANCE = "grid_imbalance"
     SPIKE_CLOSE = "spike_close"
     EXPOSURE_BREACH = "exposure_breach"
+    PARTIAL_CLOSE = "partial_close"  # First floor breach — close half, retry
+
+
+def compute_atr_bucketed_floor(
+    atr_pct: float,
+    base_pct: float = 20.0,
+    min_pct: float = 15.0,
+    max_pct: float = 30.0,
+) -> float:
+    """
+    Per-grid hard floor calibrated to coin volatility.
+
+      ATR < 0.5%  → 15%   (calm: BTC, ETH)
+      0.5–1%      → 20%   (normal)
+      1–2%        → 25%   (active)
+      > 2%        → 30%   (volatile memes)
+
+    Returns the floor as % of allocated margin. The {min,max}_pct args clamp
+    the buckets — operators can widen/tighten via env without code changes.
+    """
+    if atr_pct < 0.5:
+        floor = max(min_pct, base_pct - 5.0)
+    elif atr_pct < 1.0:
+        floor = base_pct
+    elif atr_pct < 2.0:
+        floor = base_pct + 5.0
+    else:
+        floor = base_pct + 10.0
+    return max(min_pct, min(max_pct, floor))
 
 
 @dataclass
 class SmartCloseConfig:
     """Configuration for smart negative-close logic."""
+    # NOTE on units: every loss_pct field below is now percent of ALLOCATED
+    # MARGIN (real-money risk), not percent of entry price. Margin-% is
+    # leverage-aware — a 20% margin loss means lost 20% of the capital
+    # committed to this grid, regardless of leverage. The previous price-%
+    # interpretation became unreachable at high leverage (50× → 1% price
+    # = 50% margin, so the old 5% price floor only fired at 250% margin).
+
     # Time-based decay
     time_decay_enabled: bool = True
     time_decay_hours: float = 8.0        # Close if negative for this long
-    time_decay_min_loss_pct: float = 1.0 # Minimum loss % to trigger time decay
+    time_decay_min_loss_pct: float = 5.0 # Min margin-loss % to trigger time decay
     
     # Momentum-based exit
     momentum_exit_enabled: bool = True
@@ -167,16 +206,63 @@ class SmartCloseConfig:
     imbalance_ratio_threshold: float = 3.0  # 3:1 buy:sell = close losers
     imbalance_min_fills: int = 6             # Need at least 6 fills before checking
     
-    # Trailing stop on underwater positions
+    # Trailing stop on underwater positions (margin-%)
     trailing_stop_enabled: bool = True
-    trailing_stop_initial_pct: float = 3.0   # Initial stop at -3%
+    trailing_stop_initial_pct: float = 18.0  # Initial stop at -18% margin
     trailing_stop_tighten_hours: float = 4.0 # After 4 hours, tighten
-    trailing_stop_tightened_pct: float = 2.0 # Tightened stop at -2%
-    
-    # Recovery probability (learned from data)
+    trailing_stop_tightened_pct: float = 12.0 # Tightened stop at -12% margin
+
+    # Recovery probability (learned from data) — margin-%
     recovery_check_enabled: bool = True
-    recovery_min_depth_pct: float = 1.5  # Only check if position is >1.5% underwater
+    recovery_min_depth_pct: float = 8.0  # Only check if >8% margin underwater
     recovery_max_hours: float = 6.0      # If >6 hours at this depth, unlikely to recover
+
+    # ── Premature-close protection ─────────────────────────────
+    # After any new fill the grid is still actively working — give it room
+    # to do its job before any smart-close trigger fires. Bypassed only by
+    # the hard loss floor below.
+    min_seconds_since_last_fill: float = 180.0
+
+    # ── Recovery window before realising a loss ────────────────
+    # When a smart-close check would fire, enter a recovery window: track
+    # the worst loss seen, and if the position recovers `recovery_partial_pct`
+    # of that worst loss within `recovery_window_sec`, abort the close and
+    # let the grid keep working. If the window expires without partial
+    # recovery, the close fires.
+    recovery_window_sec: float = 300.0
+    recovery_partial_pct: float = 30.0
+
+    # ── Hard loss floor (margin %) ──────────────────────────────
+    # Absolute cap on per-position loss as % of allocated margin. When
+    # breached, scale-out logic kicks in (close half + reset recovery on the
+    # remainder); a second breach closes the rest. The floor is calibrated
+    # for genuine distress in volatile markets, not noise. ATR-based
+    # plumbing in the engine can override this per-grid (15-30% bucket).
+    hard_loss_pct_floor: float = 20.0
+    hard_loss_pct_floor_min: float = 15.0   # ATR-bucketed clamp lower bound
+    hard_loss_pct_floor_max: float = 30.0   # ATR-bucketed clamp upper bound
+
+    # ── Scale-out at hard floor ─────────────────────────────────
+    # On first floor breach, close `scale_out_fraction` of the position and
+    # reset the recovery window. If the remainder breaches again, full close.
+    # Set scale_out_fraction=1.0 to disable scale-out (single-shot close).
+    scale_out_fraction: float = 0.5
+
+    # ── Dynamic take-profit ────────────────────────────────────
+    # The TP target shrinks with position age (so old positions don't sit
+    # stale with marginal gains) and can extend above the floor when
+    # momentum is favorable in the early window.
+    tp_floor_pct: float = 3.0                    # Default close target (%)
+    tp_min_age_full_target_min: float = 10.0     # Below this, full target
+    tp_decay_step_pct: float = 2.0               # Target the curve drops to right after full_target_min
+    tp_decay_to_zero_at_min: float = 60.0        # Above this, any positive closes
+    tp_dust_floor_usdt: float = 0.05             # Minimum $ PnL to honour late close
+    tp_momentum_enabled: bool = True
+    tp_momentum_max_age_min: float = 30.0        # Above this, no extension
+    tp_momentum_velocity_pct_per_min: float = 1.5
+    tp_momentum_extend_max_pct: float = 5.0      # Hard cap on extended target
+    tp_momentum_trailing_giveback_pct: float = 0.5  # Lock-in giveback above floor
+    tp_min_fills: int = 2
 
 
 class SmartCloseEngine:
@@ -194,6 +280,207 @@ class SmartCloseEngine:
         self.config = config or SmartCloseConfig()
         self._price_history: List[Tuple[float, float]] = []  # (timestamp, price)
         self._position_depth_history: Dict[str, List[Tuple[float, float]]] = {}  # side -> [(time, depth_pct)]
+        # side -> {"start_ts": float, "worst_loss_pct": float}
+        self._recovery_state: Dict[str, Dict[str, float]] = {}
+        # side -> highest pnl_pct seen during the current open position
+        self._tp_peak_pct: Dict[str, float] = {}
+
+    def reset_recovery(self, side: str = ""):
+        """Drop recovery tracking for a side (or all if empty)."""
+        if side:
+            self._recovery_state.pop(side, None)
+        else:
+            self._recovery_state.clear()
+
+    def reset_tp_peak(self, side: str = ""):
+        """Drop dynamic-TP peak tracking for a side (or all if empty)."""
+        if side:
+            self._tp_peak_pct.pop(side, None)
+        else:
+            self._tp_peak_pct.clear()
+
+    def _velocity_pct_per_min_in_favor(self, position: GridPosition) -> float:
+        """Recent price velocity (%/min) in favor of the position. Positive = good."""
+        if len(self._price_history) < 3:
+            return 0.0
+        now = self._price_history[-1][0]
+        window_sec = 60.0
+        recent = [(t, p) for t, p in self._price_history if t > now - window_sec]
+        if len(recent) < 3:
+            return 0.0
+        first_t, first_p = recent[0]
+        last_t, last_p = recent[-1]
+        if first_p <= 0 or last_t <= first_t:
+            return 0.0
+        delta_pct = (last_p - first_p) / first_p * 100
+        if position.side == "Sell":
+            delta_pct = -delta_pct
+        minutes = (last_t - first_t) / 60
+        return delta_pct / minutes if minutes > 0 else 0.0
+
+    def evaluate_take_profit(
+        self,
+        position: GridPosition,
+        current_price: float,
+        allocated_margin: float,
+        total_pnl: float,
+        total_fills: int,
+    ) -> Optional[CloseReason]:
+        """
+        Dynamic take-profit:
+          • Target shrinks with age (3% → 0% over 15-60 min).
+          • Inside the early momentum window (<30 min by default), the target
+            can extend up to `tp_momentum_extend_max_pct` while velocity in
+            our favor stays above `tp_momentum_velocity_pct_per_min`.
+          • Once the peak crosses the floor, a trailing giveback locks in
+            profit if PnL retraces by `tp_momentum_trailing_giveback_pct`.
+          • Past the momentum window, time-decay rules — no extension.
+          • Past `tp_decay_to_zero_at_min`, any positive PnL closes (with a
+            dust floor in $ terms to avoid fee-eating churn).
+        Returns CloseReason.TARGET_HIT if the position should close, else None.
+        """
+        cfg = self.config
+
+        if position.is_flat or allocated_margin <= 0:
+            self._tp_peak_pct.pop(position.side, None)
+            return None
+
+        if total_pnl <= 0:
+            # Not in profit — clear peak so future re-entry to profit starts clean.
+            self._tp_peak_pct.pop(position.side, None)
+            return None
+
+        if total_fills < cfg.tp_min_fills:
+            return None
+
+        pnl_pct = total_pnl / allocated_margin * 100
+        age_min = position.age_seconds / 60
+
+        # Update peak
+        peak = max(self._tp_peak_pct.get(position.side, 0.0), pnl_pct)
+        self._tp_peak_pct[position.side] = peak
+
+        # 1. Time-decayed floor (% required to close).
+        #    Below full_target_min: full floor target (e.g. 3%).
+        #    At full_target_min the curve steps down to `decay_step_pct` (2%)
+        #    and ramps linearly to 0 by `decay_to_zero_at_min`.
+        if age_min <= cfg.tp_min_age_full_target_min:
+            time_target_pct = cfg.tp_floor_pct
+        elif age_min >= cfg.tp_decay_to_zero_at_min:
+            time_target_pct = 0.0
+        else:
+            progress = (age_min - cfg.tp_min_age_full_target_min) / (
+                cfg.tp_decay_to_zero_at_min - cfg.tp_min_age_full_target_min
+            )
+            time_target_pct = cfg.tp_decay_step_pct * (1.0 - progress)
+
+        # 2. Late-stage dust guard
+        if age_min >= cfg.tp_decay_to_zero_at_min and total_pnl < cfg.tp_dust_floor_usdt:
+            return None
+
+        # 3. Past momentum window — time-decay rules, no extension.
+        if not cfg.tp_momentum_enabled or age_min >= cfg.tp_momentum_max_age_min:
+            if pnl_pct >= time_target_pct:
+                logger.info(
+                    f"🎯 TP TIME-DECAY ({position.side}): pnl={pnl_pct:.2f}% >= "
+                    f"target={time_target_pct:.2f}% (age={age_min:.1f}m)"
+                )
+                return CloseReason.TARGET_HIT
+            return None
+
+        # 4. Young position. If peak hasn't crossed floor, close on the
+        #    time-decayed target (which equals the floor while age <
+        #    full_target_min and decays afterward).
+        if peak < cfg.tp_floor_pct:
+            if pnl_pct >= time_target_pct:
+                logger.info(
+                    f"🎯 TP FLOOR ({position.side}): pnl={pnl_pct:.2f}% >= "
+                    f"target={time_target_pct:.2f}% (age={age_min:.1f}m)"
+                )
+                return CloseReason.TARGET_HIT
+            return None
+
+        # 5. Peak above floor. Hard cap at extend_max_pct.
+        if peak >= cfg.tp_momentum_extend_max_pct:
+            logger.info(
+                f"🎯 TP CAP ({position.side}): peak={peak:.2f}% reached "
+                f"max={cfg.tp_momentum_extend_max_pct:.2f}% (pnl={pnl_pct:.2f}%)"
+            )
+            return CloseReason.TARGET_HIT
+
+        # 6. Trailing giveback — lock in if retraced too far from peak.
+        if pnl_pct <= peak - cfg.tp_momentum_trailing_giveback_pct:
+            logger.info(
+                f"🎯 TP TRAIL LOCK ({position.side}): peak={peak:.2f}% now={pnl_pct:.2f}% "
+                f"giveback={peak-pnl_pct:.2f}%"
+            )
+            return CloseReason.TARGET_HIT
+
+        # 7. Velocity check — if momentum has died, accept floor.
+        velocity = self._velocity_pct_per_min_in_favor(position)
+        if velocity < cfg.tp_momentum_velocity_pct_per_min and pnl_pct >= cfg.tp_floor_pct:
+            logger.info(
+                f"🎯 TP MOMENTUM FADED ({position.side}): pnl={pnl_pct:.2f}% "
+                f"velocity={velocity:.2f}%/min — closing at floor"
+            )
+            return CloseReason.TARGET_HIT
+
+        # Hold and let it run.
+        return None
+
+    def _seconds_since_last_fill(self, position: GridPosition) -> float:
+        if position.last_fill_at <= 0:
+            return position.age_seconds
+        return max(0.0, time.time() - position.last_fill_at)
+
+    def _should_defer_close(self, side: str, loss_pct: float) -> bool:
+        """
+        Manage the recovery window. Returns True if the close should be
+        deferred (hold the position), False if recovery has failed and the
+        close should fire.
+        """
+        if self.config.recovery_window_sec <= 0:
+            return False
+
+        now = time.time()
+        state = self._recovery_state.get(side)
+        if state is None:
+            self._recovery_state[side] = {"start_ts": now, "worst_loss_pct": loss_pct}
+            logger.info(
+                f"🩹 RECOVERY WINDOW open ({side}): loss={loss_pct:.2f}% — "
+                f"holding up to {self.config.recovery_window_sec:.0f}s for "
+                f"{self.config.recovery_partial_pct:.0f}% bounce"
+            )
+            return True
+
+        # Update worst loss seen during this window.
+        if loss_pct > state["worst_loss_pct"]:
+            state["worst_loss_pct"] = loss_pct
+
+        worst = state["worst_loss_pct"]
+        if worst > 0:
+            recovered_pct = (worst - loss_pct) / worst * 100
+        else:
+            recovered_pct = 0.0
+
+        if recovered_pct >= self.config.recovery_partial_pct:
+            logger.info(
+                f"🩹 RECOVERY OK ({side}): worst={worst:.2f}% now={loss_pct:.2f}% "
+                f"({recovered_pct:.0f}% recovered) — aborting close"
+            )
+            self._recovery_state.pop(side, None)
+            return True
+
+        elapsed = now - state["start_ts"]
+        if elapsed < self.config.recovery_window_sec:
+            return True
+
+        logger.warning(
+            f"🩹 RECOVERY EXPIRED ({side}): worst={worst:.2f}% now={loss_pct:.2f}% "
+            f"only {recovered_pct:.0f}% recovered after {elapsed:.0f}s — closing"
+        )
+        self._recovery_state.pop(side, None)
+        return False
     
     def update_price(self, price: float, timestamp: float = None):
         """Record price for momentum analysis."""
@@ -210,6 +497,8 @@ class SmartCloseEngine:
         allocated_margin: float,
         imbalance: GridImbalance,
         total_fills: int,
+        drawdown_breached: bool = False,
+        atr_pct: float = 0.0,
     ) -> Optional[CloseReason]:
         """
         Check if a losing position should be closed based on smart logic.
@@ -219,51 +508,107 @@ class SmartCloseEngine:
         """
         if position.is_flat:
             return None
-        
-        # Calculate current loss
-        if position.side == "Buy":
-            loss_pct = (position.entry_price - current_price) / position.entry_price * 100
+
+        # ── Loss measurement ──
+        # `loss_pct` is the loss as a percentage of allocated margin (real
+        # money risk), NOT a percentage of entry price. Margin-% is leverage-
+        # aware: a 5% margin loss means you lost $0.50 on $10 allocated,
+        # regardless of leverage. Price-% on the other hand swings 50× harder
+        # at 50× leverage and made the previous hard floor unreachable until
+        # catastrophic moves.
+        position.update_unrealized(current_price)
+        total_pnl = position.realized_pnl + position.unrealized_pnl
+        if allocated_margin > 0:
+            loss_pct = -total_pnl / allocated_margin * 100
         else:
-            loss_pct = (current_price - position.entry_price) / position.entry_price * 100
-        
+            # Fallback to price-% if we don't know the margin (callers should
+            # always pass it; this preserves existing tests).
+            if position.side == "Buy":
+                loss_pct = (position.entry_price - current_price) / position.entry_price * 100
+            else:
+                loss_pct = (current_price - position.entry_price) / position.entry_price * 100
+
         # Only apply to losing positions
         if loss_pct <= 0:
+            # Position is flat or in profit — clear any in-flight recovery state
+            self._recovery_state.pop(position.side, None)
             return None
-        
+
         # Track depth over time
         self._track_depth(position.side, loss_pct)
-        
-        # ── Check 1: Time-based decay ──
+
+        # ── Hard loss floor: bypass cooldown + recovery ──
+        # Per-grid floor: ATR-bucketed if atr_pct supplied, else config default.
+        if atr_pct > 0:
+            floor_pct = compute_atr_bucketed_floor(
+                atr_pct,
+                base_pct=self.config.hard_loss_pct_floor,
+                min_pct=self.config.hard_loss_pct_floor_min,
+                max_pct=self.config.hard_loss_pct_floor_max,
+            )
+        else:
+            floor_pct = self.config.hard_loss_pct_floor
+
+        if loss_pct >= floor_pct:
+            self._recovery_state.pop(position.side, None)
+            # First breach scales out (half-close + retry); the engine layer
+            # synthesizes the partial fill. Subsequent breach closes the rest.
+            if not position.scaled_out and self.config.scale_out_fraction < 1.0:
+                logger.warning(
+                    f"🛑 HARD FLOOR ({position.side}): loss={loss_pct:.2f}% >= "
+                    f"{floor_pct:.2f}% (ATR={atr_pct:.2f}%) — scaling out "
+                    f"{self.config.scale_out_fraction*100:.0f}%"
+                )
+                return CloseReason.PARTIAL_CLOSE
+            logger.warning(
+                f"🛑 HARD FLOOR ({position.side}): loss={loss_pct:.2f}% >= "
+                f"{floor_pct:.2f}% — closing remainder (already scaled out)"
+            )
+            return CloseReason.DRAWDOWN
+
+        # ── Post-fill cooldown: let the grid work after a recent fill ──
+        sec_since_fill = self._seconds_since_last_fill(position)
+        if sec_since_fill < self.config.min_seconds_since_last_fill:
+            return None
+
+        # ── Identify the strongest candidate close reason ──
+        candidate: Optional[CloseReason] = None
+
         if self.config.time_decay_enabled:
-            reason = self._check_time_decay(position, loss_pct)
-            if reason:
-                return reason
-        
-        # ── Check 2: Momentum exit ──
+            candidate = candidate or self._check_time_decay(position, loss_pct)
+
         if self.config.momentum_exit_enabled:
-            reason = self._check_momentum(position, current_price)
-            if reason:
-                return reason
-        
-        # ── Check 3: Grid imbalance ──
+            candidate = candidate or self._check_momentum(position, current_price)
+
         if self.config.imbalance_close_enabled:
-            reason = self._check_imbalance(position, imbalance, total_fills)
-            if reason:
-                return reason
-        
-        # ── Check 4: Trailing stop on underwater ──
+            candidate = candidate or self._check_imbalance(position, imbalance, total_fills)
+
         if self.config.trailing_stop_enabled:
-            reason = self._check_trailing_stop(position, loss_pct)
-            if reason:
-                return reason
-        
-        # ── Check 5: Recovery probability ──
+            candidate = candidate or self._check_trailing_stop(position, loss_pct)
+
         if self.config.recovery_check_enabled:
-            reason = self._check_recovery_probability(position, loss_pct)
-            if reason:
-                return reason
-        
-        return None
+            candidate = candidate or self._check_recovery_probability(position, loss_pct)
+
+        # Promote a drawdown breach into a candidate. This routes the
+        # drawdown floor through the same cooldown + recovery deferral as
+        # the other smart-close triggers, so a position close to the
+        # margin-based DD limit still gets a chance to recover before the
+        # loss is realised. The hard_loss_pct_floor above is the absolute
+        # safety net.
+        if candidate is None and drawdown_breached:
+            candidate = CloseReason.DRAWDOWN
+
+        if candidate is None:
+            # No trigger — but if we were in a recovery window and the
+            # underlying check has stopped firing, leave the state alone:
+            # the next firing-or-bounce will resolve it.
+            return None
+
+        # Route through the recovery window before realising the loss.
+        if self._should_defer_close(position.side, loss_pct):
+            return None
+
+        return candidate
     
     def _track_depth(self, side: str, depth_pct: float):
         """Track position depth over time for recovery analysis."""
@@ -497,8 +842,13 @@ def process_fill(
             position.entry_price = 0.0
             position.unrealized_pnl = 0.0
             position.opened_at = 0.0
+            position.last_fill_at = 0.0
+            position.scaled_out = False
         # If remaining qty > 0, position stays open with same entry
-    
+
+    if not position.is_flat:
+        position.last_fill_at = fill.timestamp
+
     fill.pnl_from_fill = pnl
     return pnl
 
@@ -540,19 +890,51 @@ def check_close_conditions(
         result.close_reason = CloseReason.TARGET_HIT.value
         return result
     
-    # Drawdown check
+    # Drawdown check — flag breach but don't auto-close (let SmartCloseEngine decide first)
     drawdown_limit = allocated_margin * max_drawdown_pct / 100
     result.drawdown_limit = drawdown_limit
     
     if total_pnl < 0 and abs(total_pnl) > drawdown_limit:
-        result.should_close = True
+        result.drawdown_breached = True
         result.close_reason = CloseReason.DRAWDOWN.value
+        # Don't set should_close=True — SmartCloseEngine gets first chance to evaluate
         return result
     
     return result
 
 
 # ── Cycle Reset ────────────────────────────────────────────────
+
+def perform_partial_close(
+    position: GridPosition,
+    imbalance: GridImbalance,
+    current_price: float,
+    fraction: float = 0.5,
+) -> tuple[float, float]:
+    """
+    Synthesize a closing fill that realizes `fraction` of the position at
+    `current_price`. Marks `position.scaled_out=True`. Returns (realised_pnl,
+    qty_closed).
+
+    Uses the standard process_fill machinery — the closing fill is just an
+    opposite-side fill that reduces qty without flipping the position.
+    """
+    if position.is_flat or fraction <= 0 or fraction >= 1:
+        return 0.0, 0.0
+    close_qty = position.qty * fraction
+    opposite = "Sell" if position.side == "Buy" else "Buy"
+    fill = FillEvent(
+        level_index=-1,
+        side=opposite,
+        price=current_price,
+        qty=close_qty,
+        timestamp=time.time(),
+    )
+    pnl = process_fill(fill, position, imbalance)
+    if not position.is_flat:
+        position.scaled_out = True
+    return pnl, close_qty
+
 
 def reset_position(position: GridPosition):
     """Reset position for next cycle."""
@@ -561,6 +943,8 @@ def reset_position(position: GridPosition):
     position.entry_price = 0.0
     position.unrealized_pnl = 0.0
     position.opened_at = 0.0
+    position.last_fill_at = 0.0
+    position.scaled_out = False
 
 
 def reset_imbalance(imbalance: GridImbalance):
