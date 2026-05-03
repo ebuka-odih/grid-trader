@@ -1,8 +1,19 @@
-"""Paper-first Hummingbot execution adapter skeleton.
+"""LEGACY — Hummingbot execution adapter. NOT USED IN PRODUCTION.
 
-This adapter is deliberately conservative: it verifies Hummingbot paper mode
-before writing deployment artifacts, stores generated configs/signals, and
-returns normalized `GridExecutionState` objects. It does not place live orders.
+The active live execution path is `live_engine.LiveEngine`, which talks to
+the exchange directly via CCXT (currently Bybit; the same interface
+accommodates Binance/OKX/etc when added). Setting `DRY_RUN=false` routes
+orders through LiveEngine — the EXECUTION_BACKEND and HUMMINGBOT_* env vars
+are no-ops.
+
+Do not import or instantiate this adapter from the runtime path. Kept
+here for reference only.
+
+Original docstring:
+Paper-first Hummingbot execution adapter skeleton. Verifies Hummingbot
+paper mode before writing deployment artifacts, stores generated configs/
+signals, and returns normalized `GridExecutionState` objects. It does not
+place live orders.
 """
 
 from __future__ import annotations

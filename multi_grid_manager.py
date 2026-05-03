@@ -1501,12 +1501,14 @@ class MultiGridManager:
         if token_profile.get("exp_sizing_gamma"):
             adaptive_cfg.exp_sizing_gamma = token_profile["exp_sizing_gamma"]
         
-        # v4: Use LiveEngine when DRY_RUN=false, DryRunEngine when true
+        # v4: Use LiveEngine when DRY_RUN=false, DryRunEngine when true.
+        # The live engine receives the manager's TelegramAlerter so it can
+        # raise critical alerts (flatten failures, scale-out failures).
         if DRY_RUN:
             engine = DryRunEngine(adaptive_config=adaptive_cfg)
         else:
             from live_engine import LiveEngine
-            engine = LiveEngine()
+            engine = LiveEngine(alerter=self.alerter)
         
         state = await self._deploy_biased_grid(
 

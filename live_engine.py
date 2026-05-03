@@ -107,7 +107,8 @@ class LiveEngine:
     - Smart negative close (SmartCloseEngine)
     """
     
-    def __init__(self, max_cycles: int = 1, smart_close_config: SmartCloseConfig = None):
+    def __init__(self, max_cycles: int = 1, smart_close_config: SmartCloseConfig = None,
+                 alerter=None):
         self.state: Optional[LiveState] = None
         self._grid_engine: Optional[GridEngine] = None
         self._adaptive: Optional[AdaptiveGrid] = None
@@ -115,6 +116,8 @@ class LiveEngine:
         self._smart_close = SmartCloseEngine(
             smart_close_config or _smart_close_config_from_env()
         )
+        # Optional Telegram alerter — manager passes its own. None = no-op.
+        self._alerter = alerter
         
         # WebSocket fill queue
         self._fill_queue: asyncio.Queue = asyncio.Queue()
@@ -233,21 +236,58 @@ class LiveEngine:
                 atr_pct=self.state.atr_pct,
             )
             if smart_reason == CloseReason.PARTIAL_CLOSE:
-                # Live scale-out requires a reduce-only exchange order which
-                # has not been plumbed through grid_engine yet. Until that's
-                # in place, fall through to a full close in live mode so
-                # internal state stays in lockstep with the exchange. The
-                # dry-run path uses the in-memory perform_partial_close.
-                # TODO: wire grid_engine.place_reduce_only_market(symbol,
-                # opposite_side, qty) here, then call perform_partial_close
-                # for the in-memory mirror.
+                # Live scale-out: send a reduce-only market order for half the
+                # position via grid_engine.close_position (which sets
+                # reduceOnly=True). Mirror the in-memory state with
+                # perform_partial_close so the recovery window can run on
+                # the remainder. On any exchange-side failure, fall back to
+                # a full close so the bot never holds an unmanaged position.
+                close_qty = (
+                    self.state.position.qty
+                    * self._smart_close.config.scale_out_fraction
+                )
+                pos_side = self.state.position.side
+                try:
+                    order = await self._grid_engine.close_position(
+                        self.state.grid.symbol, pos_side, close_qty
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"⚖️  LIVE SCALE-OUT exchange call raised: {e} — "
+                        f"falling back to full close"
+                    )
+                    order = None
+                if not order:
+                    logger.error(
+                        f"⚖️  LIVE SCALE-OUT failed (no order ack) — "
+                        f"falling back to full close"
+                    )
+                    return await self._handle_close(
+                        CloseReason.DRAWDOWN.value, pnl_result.total_pnl
+                    )
+                # Mirror in-memory state so recovery window + scaled_out flag
+                # are correctly tracked for the remainder of the position.
+                realised, qty = perform_partial_close(
+                    self.state.position, self.state.imbalance, price,
+                    fraction=self._smart_close.config.scale_out_fraction,
+                )
+                self._smart_close.reset_recovery()
                 logger.warning(
-                    f"⚖️  LIVE SCALE-OUT not yet wired to exchange — "
-                    f"closing fully (PnL=${pnl_result.total_pnl:.4f})"
+                    f"⚖️  LIVE SCALE-OUT: closed {qty:.6f} {pos_side} @ ${price:.4f} | "
+                    f"realised=${realised:.4f} | remaining={self.state.position.qty:.6f} | "
+                    f"order_id={order.get('id', '?') if isinstance(order, dict) else '?'}"
                 )
-                return await self._handle_close(
-                    CloseReason.DRAWDOWN.value, pnl_result.total_pnl
-                )
+                if self._alerter:
+                    try:
+                        await self._alerter.send(
+                            f"⚖️ <b>LIVE SCALE-OUT</b>\n"
+                            f"📊 {self.state.grid.symbol}\n"
+                            f"💰 Realised: <code>${realised:.4f}</code>\n"
+                            f"⏳ Remaining qty: {self.state.position.qty:.6f}"
+                        )
+                    except Exception:
+                        pass
+                return "partial_close"
             if smart_reason:
                 logger.info(
                     f"🧠 LIVE SMART CLOSE: {smart_reason.value} | "
@@ -259,7 +299,12 @@ class LiveEngine:
         return None
     
     async def _handle_close(self, reason: str, total_pnl: float) -> str:
-        """Handle grid close — either final close or cycle reset."""
+        """
+        Handle grid close: cancel any open orders, market-close the
+        remaining position, then mark the engine inactive. This MUST run
+        every code path that returns a final close reason — leaving open
+        orders or an open position on the exchange is a critical bug.
+        """
         if self._cycle_state.max_cycles > 1:
             cycle_done = self._cycle_state.complete_cycle(total_pnl)
             logger.info(
@@ -267,18 +312,75 @@ class LiveEngine:
                 f"reason={reason} | PnL=${total_pnl:.4f} | "
                 f"cumulative=${self._cycle_state.cumulative_pnl:.4f}"
             )
-            
             if cycle_done:
-                logger.info(f"🛑 MAX CYCLES REACHED — closing grid")
-                self.state.is_active = False
+                logger.info(f"🛑 MAX CYCLES REACHED — flattening + cancelling")
+                await self._flatten_and_cancel(reason)
                 return reason
             else:
                 await self._reset_grid_for_next_cycle(self.state.current_price)
                 return "cycle_complete"
         else:
             logger.info(f"🔴 LIVE CLOSE | reason={reason} | PnL=${total_pnl:.4f}")
-            self.state.is_active = False
+            await self._flatten_and_cancel(reason)
             return reason
+
+    async def _flatten_and_cancel(self, reason: str):
+        """
+        Cancel all live grid orders and market-close any remaining position.
+        Idempotent — safe to call multiple times; failures are logged but
+        don't raise (we still flip is_active=False so the manager can free
+        the slot rather than leaving the engine in a half-open state).
+        """
+        if not self.state:
+            return
+        # 1) Cancel all open grid orders first so they can't fill while we
+        #    are flattening.
+        try:
+            await self.cancel_grid()
+        except Exception as e:
+            logger.error(f"_flatten_and_cancel: cancel_grid failed: {e}")
+        # 2) Close any remaining position via reduce-only market order.
+        if not self.state.position.is_flat and self.state.position.qty > 0:
+            symbol = self.state.grid.symbol
+            side = self.state.position.side
+            qty = self.state.position.qty
+            try:
+                order = await self._grid_engine.close_position(symbol, side, qty)
+                if order:
+                    logger.info(
+                        f"🔴 LIVE FLATTEN: closed {side} {qty:.6f} @ market "
+                        f"({reason}) order_id={order.get('id', '?') if isinstance(order, dict) else '?'}"
+                    )
+                else:
+                    logger.error(
+                        f"🚨 LIVE FLATTEN: close_position returned None for {symbol} "
+                        f"{side} {qty} — position may still be open!"
+                    )
+                    await self._alert_critical(
+                        f"🚨 <b>FLATTEN FAILED</b> {symbol}\n"
+                        f"close_position returned None for {side} {qty:.6f}\n"
+                        f"<b>Position may still be open on exchange.</b>"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"🚨 LIVE FLATTEN: close_position raised for {symbol}: {e} — "
+                    f"position may still be open!"
+                )
+                await self._alert_critical(
+                    f"🚨 <b>FLATTEN ERROR</b> {symbol}\n"
+                    f"{type(e).__name__}: {str(e)[:200]}\n"
+                    f"<b>Position may still be open on exchange.</b>"
+                )
+        self.state.is_active = False
+
+    async def _alert_critical(self, html: str):
+        """Best-effort Telegram alert for critical events; never raises."""
+        if not self._alerter:
+            return
+        try:
+            await self._alerter.send(html)
+        except Exception as e:
+            logger.error(f"Telegram alert failed: {e}")
     
     async def _process_fill_queue(self) -> Optional[str]:
         """Process fill events from WebSocket using grid_core.process_fill."""
