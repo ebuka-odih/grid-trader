@@ -207,13 +207,22 @@ class SmartCloseConfig:
     imbalance_min_fills: int = 6             # Need at least 6 fills before checking
 
     # ── Emergency imbalance bypass ───────────────────────────────
-    # When the grid is filling rapidly in one direction (severe imbalance +
-    # meaningful loss), bypass min-age AND the hard floor so the close
-    # fires earlier — at ~3-7% loss instead of waiting for the 15% floor.
-    # Prevents fast-trending grids from racking up -15% to -28% losses.
-    imbalance_emergency_ratio: float = 4.0    # lowered from 5.0 → fires sooner
-    imbalance_emergency_min_fills: int = 4    # lowered from 5 → fires sooner
-    imbalance_emergency_min_loss_pct: float = 3.0  # lowered from 5.0 → fires earlier
+    # When the grid is filling rapidly in one direction *and* the position
+    # has had time to declare itself, bypass min-age + hard floor so the
+    # close fires before -15% to -28%. Two guards stop the bypass from
+    # firing on routine candle events that the freeze + hard-floor + scale
+    # -out chain would have absorbed:
+    #   - min_loss_pct: 8% margin (was 3%) — below this, we trust freeze
+    #     + recovery window. ZEN closing at 3.6% in 23s with -$0.55 was
+    #     the canonical false trigger; data showed 10/24 post-fix losers
+    #     all hit this path.
+    #   - min_age_sec: 60s — a 4-fill burst inside one minute is the
+    #     candle pattern, not a sustained directional move. Skip the
+    #     bypass and let freeze pause new fills while smart-close watches.
+    imbalance_emergency_ratio: float = 4.0
+    imbalance_emergency_min_fills: int = 4
+    imbalance_emergency_min_loss_pct: float = 8.0
+    imbalance_emergency_min_age_sec: float = 60.0
     
     # Trailing stop on underwater positions (margin-%)
     trailing_stop_enabled: bool = True
@@ -566,24 +575,50 @@ class SmartCloseEngine:
         self._track_depth(position.side, loss_pct)
 
         # ── Emergency imbalance bypass (FIRST — bypasses both min-age AND floor) ──
-        # In a fast trending market the grid can fill 5+ levels on one side
-        # within seconds. If we wait for the min-age guard to clear (90s),
-        # the floor has already fired at 15%. Catching severe imbalance
-        # earlier lets us close at ~5-7% loss instead of 15-28%.
-        if (
+        # Catches sustained directional fills before the hard floor at 15%.
+        # Two new guards keep it from firing on candle events:
+        #   - loss_pct >= imbalance_emergency_min_loss_pct (default 8%) so
+        #     small-bleed bursts get to recover via freeze + smart-close.
+        #   - position.age_seconds >= imbalance_emergency_min_age_sec
+        #     (default 60s) so a 4-fill candle inside one minute can't
+        #     trip the bypass.
+        # Below those thresholds the freeze (max_same_side_fills) pauses
+        # new fills, the hard floor (15-30% margin, ATR-bucketed) is the
+        # real safety net, and scale-out at the floor halves before close.
+        meets_size = (
             self.config.imbalance_close_enabled
             and total_fills >= self.config.imbalance_emergency_min_fills
             and imbalance.imbalance_ratio >= self.config.imbalance_emergency_ratio
-            and loss_pct >= self.config.imbalance_emergency_min_loss_pct
             and position.side == imbalance.dominant_side
-        ):
-            logger.warning(
-                f"⚡ EMERGENCY IMBALANCE ({position.side}): "
-                f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
-                f"loss={loss_pct:.2f}% — bypassing min-age + floor"
-            )
-            self._recovery_state.pop(position.side, None)
-            return CloseReason.GRID_IMBALANCE
+        )
+        if meets_size:
+            meets_loss = loss_pct >= self.config.imbalance_emergency_min_loss_pct
+            meets_age = position.age_seconds >= self.config.imbalance_emergency_min_age_sec
+            if meets_loss and meets_age:
+                logger.warning(
+                    f"⚡ EMERGENCY IMBALANCE ({position.side}): "
+                    f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
+                    f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s — "
+                    f"bypassing min-age + floor"
+                )
+                self._recovery_state.pop(position.side, None)
+                return CloseReason.GRID_IMBALANCE
+            elif not meets_age:
+                logger.info(
+                    f"⏸  IMBALANCE bypass deferred (candle guard): {position.side} "
+                    f"ratio={imbalance.imbalance_ratio:.1f}:1 fills={total_fills} "
+                    f"loss={loss_pct:.2f}% age={position.age_seconds:.0f}s "
+                    f"< {self.config.imbalance_emergency_min_age_sec:.0f}s — "
+                    f"letting freeze + hard floor manage exit"
+                )
+            elif not meets_loss:
+                logger.info(
+                    f"⏸  IMBALANCE bypass deferred (loss guard): {position.side} "
+                    f"ratio={imbalance.imbalance_ratio:.1f}:1 fills={total_fills} "
+                    f"loss={loss_pct:.2f}% < "
+                    f"{self.config.imbalance_emergency_min_loss_pct:.1f}% — "
+                    f"letting freeze + recovery window work"
+                )
 
         # ── Minimum position age ──
         # A brand-new grid filling its first few levels can briefly show a
