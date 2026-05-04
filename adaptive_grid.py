@@ -13,6 +13,7 @@ Cross-margin aware: all calculations respect wallet exposure limits.
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -580,10 +581,15 @@ def default_config() -> AdaptiveConfig:
         trailing_enabled=False,
         # Exponential sizing DISABLED
         exp_sizing_enabled=False,
-        # Spike detection — fast 10s window
-        spike_window_sec=10.0,
-        spike_threshold_pct=0.7,
-        spike_cooldown_sec=30.0,
+        # Spike detection — fast 10s window.
+        # Threshold tightened from 0.7→0.5 and cooldown extended from 30→60
+        # to catch more cross-symbol candle events. Drawdown closes were
+        # the dominant losing close-reason (avg -$1.93/trade) and 27% of
+        # them clustered in 9 five-minute windows, so the existing
+        # spike-fill-pause has more work to do.
+        spike_window_sec=float(os.getenv("SPIKE_WINDOW_SEC", "10.0")),
+        spike_threshold_pct=float(os.getenv("SPIKE_THRESHOLD_PCT", "0.5")),
+        spike_cooldown_sec=float(os.getenv("SPIKE_COOLDOWN_SEC", "60.0")),
         # Exposure cap — freeze (don't auto-close) on breach.
         # 4 consecutive same-side fills triggers a freeze: pauses new fills
         # but lets the position run for the smart-close engine to manage.

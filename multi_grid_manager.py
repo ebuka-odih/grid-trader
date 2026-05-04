@@ -63,6 +63,7 @@ import math
 import time
 import fcntl
 
+from collections import deque
 from dataclasses import dataclass, field
 
 from typing import Optional, Dict, Any
@@ -235,6 +236,18 @@ LOSING_STAGNANT_TIMEOUT_SECONDS = int(os.getenv("LOSING_STAGNANT_TIMEOUT_SECONDS
 STAGNANT_GRID_TIMEOUT_SECONDS = int(os.getenv("STAGNANT_GRID_TIMEOUT_SECONDS", "2400"))  # 40m no meaningful progress
 MIN_PROGRESS_PRICE_MOVE_PCT = float(os.getenv("MIN_PROGRESS_PRICE_MOVE_PCT", "0.03"))
 MIN_PROGRESS_PNL_MOVE_USDT = float(os.getenv("MIN_PROGRESS_PNL_MOVE_USDT", "0.01"))
+
+# Drawdown-cluster deploy gate: when N grids close with reason in
+# {drawdown, spike_close} inside a sliding window, the market is in a
+# cross-symbol candle event. Pause new deploys so we don't immediately
+# stuff fresh grids into the same volatility — they'd get filled at the
+# spike and hit the floor too. Reason ratio (24h DB sample): drawdown
+# closes account for ~80% of total losing PnL, with 27% of them clustered
+# in 9 five-minute windows; this gate addresses that pattern.
+DRAWDOWN_CLUSTER_WINDOW_SEC = float(os.getenv("DRAWDOWN_CLUSTER_WINDOW_SEC", "300"))
+DRAWDOWN_CLUSTER_THRESHOLD = int(os.getenv("DRAWDOWN_CLUSTER_THRESHOLD", "3"))
+DRAWDOWN_CLUSTER_PAUSE_SEC = float(os.getenv("DRAWDOWN_CLUSTER_PAUSE_SEC", "600"))
+DRAWDOWN_CLUSTER_REASONS = frozenset({"drawdown", "spike_close"})
 
 
 def normalize_grid_density(
@@ -588,6 +601,13 @@ class MultiGridManager:
         self._recently_rejected: dict[str, float] = {}  # symbol -> rejection timestamp
         self._rejection_cooldown = 300  # 5 minutes before retrying a rejected symbol
 
+        # Cross-symbol drawdown-cluster gate: timestamps of recent close events
+        # whose reason indicates a price-driven exit (drawdown / spike_close).
+        # When the count inside DRAWDOWN_CLUSTER_WINDOW_SEC reaches
+        # DRAWDOWN_CLUSTER_THRESHOLD, deployments pause for
+        # DRAWDOWN_CLUSTER_PAUSE_SEC.
+        self._cluster_close_ts: deque[float] = deque(maxlen=64)
+
         self._broadcaster_task: Optional[asyncio.Task] = None
 
         self._risk_monitor_task: Optional[asyncio.Task] = None
@@ -622,6 +642,32 @@ class MultiGridManager:
             f"risk_monitor=active"
 
         )
+
+    def _record_cluster_close(self, close_reason: str) -> None:
+        """
+        Record a price-driven close for the cross-symbol cluster gate.
+        When the rolling count of cluster-eligible closes inside the window
+        crosses the threshold, pause new deployments. Idempotent: extending
+        an already-active pause is fine.
+        """
+        if close_reason not in DRAWDOWN_CLUSTER_REASONS:
+            return
+        now = time.time()
+        cutoff = now - DRAWDOWN_CLUSTER_WINDOW_SEC
+        # Prune old entries
+        while self._cluster_close_ts and self._cluster_close_ts[0] < cutoff:
+            self._cluster_close_ts.popleft()
+        self._cluster_close_ts.append(now)
+        if len(self._cluster_close_ts) >= DRAWDOWN_CLUSTER_THRESHOLD:
+            new_until = now + DRAWDOWN_CLUSTER_PAUSE_SEC
+            if new_until > self._deployment_paused_until:
+                self._deployment_paused_until = new_until
+                logger.warning(
+                    f"⚠️ DRAWDOWN CLUSTER: {len(self._cluster_close_ts)} "
+                    f"price-driven closes in last "
+                    f"{DRAWDOWN_CLUSTER_WINDOW_SEC:.0f}s — pausing deploys for "
+                    f"{DRAWDOWN_CLUSTER_PAUSE_SEC:.0f}s"
+                )
 
     def _session_start_file(self) -> str:
         """Path of the persisted session-start marker."""
@@ -1076,7 +1122,9 @@ class MultiGridManager:
 
             remaining = self._deployment_paused_until - now
 
-            logger.warning(f"💓 Deployment paused by heartbeat for {remaining:.0f}s")
+            cluster_active = len(self._cluster_close_ts) >= DRAWDOWN_CLUSTER_THRESHOLD
+            label = "by drawdown cluster" if cluster_active else "by heartbeat"
+            logger.warning(f"💓 Deployment paused {label} for {remaining:.0f}s")
 
             return
 
@@ -2226,6 +2274,9 @@ class MultiGridManager:
         # Update slot
 
         slot.close_reason = close_reason
+
+        # Feed price-driven closes to the cross-symbol cluster gate.
+        self._record_cluster_close(close_reason)
 
         slot.total_pnl = total_pnl
 
