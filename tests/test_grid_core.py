@@ -532,6 +532,60 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
         result = engine.check_smart_close(pos, 100.2, 10.0, imb, total_fills=7)
         self.assertIsNone(result)
 
+    def test_emergency_bypass_fires_on_fresh_position(self):
+        # The bypass MUST fire even on a position younger than
+        # min_position_age_sec — that's its whole purpose. Catastrophic
+        # fast-trending grids fill in seconds and would otherwise be
+        # blocked by the min-age guard until the floor catches them at -15%.
+        cfg = SmartCloseConfig(
+            min_seconds_since_last_fill=180.0,
+            recovery_window_sec=0.0,
+            min_position_age_sec=90.0,           # min-age active
+            hard_loss_pct_floor=20.0,
+            scale_out_fraction=1.0,
+            imbalance_emergency_ratio=4.0,
+            imbalance_emergency_min_fills=4,
+            imbalance_emergency_min_loss_pct=3.0,
+            imbalance_close_enabled=True,
+        )
+        engine = SmartCloseEngine(cfg)
+        # 30s old position — under min_age — but already 6 same-side fills
+        pos = GridPosition(
+            side="Buy", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 30, last_fill_at=time.time() - 1,
+        )
+        imb = GridImbalance(buy_fills=6, sell_fills=1, last_side="Buy", consecutive_same_side=5)
+        # 5% loss → above 3% emergency threshold
+        result = engine.check_smart_close(pos, 99.875, 10.0, imb, total_fills=7)
+        self.assertEqual(result, CloseReason.GRID_IMBALANCE,
+            "Emergency bypass MUST fire even on fresh positions to catch fast-trending grids")
+
+    def test_emergency_bypass_fires_before_floor(self):
+        # When loss is already past the floor (e.g. 16% > 15%), the bypass
+        # should still take precedence over the floor for severe imbalance —
+        # closing as GRID_IMBALANCE (not DRAWDOWN) since the imbalance is
+        # the actual problem.
+        cfg = SmartCloseConfig(
+            min_seconds_since_last_fill=180.0,
+            recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
+            hard_loss_pct_floor=15.0,
+            scale_out_fraction=0.5,
+            imbalance_emergency_ratio=4.0,
+            imbalance_emergency_min_fills=4,
+            imbalance_emergency_min_loss_pct=3.0,
+            imbalance_close_enabled=True,
+        )
+        engine = SmartCloseEngine(cfg)
+        pos = GridPosition(
+            side="Buy", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 200, last_fill_at=time.time() - 1,
+        )
+        imb = GridImbalance(buy_fills=6, sell_fills=0, last_side="Buy", consecutive_same_side=6)
+        # 16% loss — past floor. Bypass should fire as GRID_IMBALANCE.
+        result = engine.check_smart_close(pos, 99.6, 10.0, imb, total_fills=6)
+        self.assertEqual(result, CloseReason.GRID_IMBALANCE)
+
     def test_emergency_bypass_does_not_fire_below_min_fills(self):
         # Severe ratio but only 4 total fills — under min — defer.
         engine = self._engine(imbalance_emergency_min_fills=5)

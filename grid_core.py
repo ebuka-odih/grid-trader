@@ -208,12 +208,12 @@ class SmartCloseConfig:
 
     # ── Emergency imbalance bypass ───────────────────────────────
     # When the grid is filling rapidly in one direction (severe imbalance +
-    # meaningful loss), bypass the post-fill cooldown so the close fires
-    # BEFORE the hard floor catches the position. Prevents the "trending grid
-    # that hits floor before any other check could fire" failure mode.
-    imbalance_emergency_ratio: float = 5.0
-    imbalance_emergency_min_fills: int = 5
-    imbalance_emergency_min_loss_pct: float = 5.0  # margin %
+    # meaningful loss), bypass min-age AND the hard floor so the close
+    # fires earlier — at ~3-7% loss instead of waiting for the 15% floor.
+    # Prevents fast-trending grids from racking up -15% to -28% losses.
+    imbalance_emergency_ratio: float = 4.0    # lowered from 5.0 → fires sooner
+    imbalance_emergency_min_fills: int = 4    # lowered from 5 → fires sooner
+    imbalance_emergency_min_loss_pct: float = 3.0  # lowered from 5.0 → fires earlier
     
     # Trailing stop on underwater positions (margin-%)
     trailing_stop_enabled: bool = True
@@ -526,14 +526,6 @@ class SmartCloseEngine:
         if position.is_flat:
             return None
 
-        # ── Minimum position age ──
-        # A brand-new grid filling its first few levels can briefly show a
-        # large apparent margin loss that is just the cost basis re-spreading
-        # across more fills. Don't close anything in the first
-        # `min_position_age_sec` seconds — let the grid actually establish.
-        if position.age_seconds < self.config.min_position_age_sec:
-            return None
-
         # ── Loss measurement ──
         # `loss_pct` is the loss as a percentage of allocated margin (real
         # money risk), NOT a percentage of entry price. Margin-% is leverage-
@@ -573,6 +565,34 @@ class SmartCloseEngine:
         # Track depth over time
         self._track_depth(position.side, loss_pct)
 
+        # ── Emergency imbalance bypass (FIRST — bypasses both min-age AND floor) ──
+        # In a fast trending market the grid can fill 5+ levels on one side
+        # within seconds. If we wait for the min-age guard to clear (90s),
+        # the floor has already fired at 15%. Catching severe imbalance
+        # earlier lets us close at ~5-7% loss instead of 15-28%.
+        if (
+            self.config.imbalance_close_enabled
+            and total_fills >= self.config.imbalance_emergency_min_fills
+            and imbalance.imbalance_ratio >= self.config.imbalance_emergency_ratio
+            and loss_pct >= self.config.imbalance_emergency_min_loss_pct
+            and position.side == imbalance.dominant_side
+        ):
+            logger.warning(
+                f"⚡ EMERGENCY IMBALANCE ({position.side}): "
+                f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
+                f"loss={loss_pct:.2f}% — bypassing min-age + floor"
+            )
+            self._recovery_state.pop(position.side, None)
+            return CloseReason.GRID_IMBALANCE
+
+        # ── Minimum position age ──
+        # A brand-new grid filling its first few levels can briefly show a
+        # large apparent margin loss that is just the cost basis re-spreading
+        # across more fills. Don't close (except via emergency bypass above)
+        # in the first `min_position_age_sec` seconds.
+        if position.age_seconds < self.config.min_position_age_sec:
+            return None
+
         # ── Hard loss floor: bypass cooldown + recovery ──
         # Per-grid floor: ATR-bucketed if atr_pct supplied, else config default.
         if atr_pct > 0:
@@ -601,26 +621,6 @@ class SmartCloseEngine:
                 f"{floor_pct:.2f}% — closing remainder (already scaled out)"
             )
             return CloseReason.DRAWDOWN
-
-        # ── Emergency imbalance bypass (Option A) ──
-        # In a fast trending market, the grid can fill 5+ levels on one side
-        # within seconds. The post-fill cooldown (below) would normally block
-        # the imbalance check until those 180s elapse — by which time the
-        # hard floor has already fired. This bypass lets a SEVERE imbalance
-        # (>=5:1) close the loser early, BEFORE the floor catches it.
-        if (
-            self.config.imbalance_close_enabled
-            and total_fills >= self.config.imbalance_emergency_min_fills
-            and imbalance.imbalance_ratio >= self.config.imbalance_emergency_ratio
-            and loss_pct >= self.config.imbalance_emergency_min_loss_pct
-            and position.side == imbalance.dominant_side
-        ):
-            logger.warning(
-                f"⚡ EMERGENCY IMBALANCE ({position.side}): "
-                f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
-                f"loss={loss_pct:.2f}% — bypassing cooldown"
-            )
-            return CloseReason.GRID_IMBALANCE
 
         # ── Post-fill cooldown: let the grid work after a recent fill ──
         sec_since_fill = self._seconds_since_last_fill(position)
