@@ -28,7 +28,9 @@ from multi_grid_manager import (  # type: ignore
     DRAWDOWN_CLUSTER_REASONS,
     DRAWDOWN_CLUSTER_THRESHOLD,
     DRAWDOWN_CLUSTER_WINDOW_SEC,
+    ENGINE_FINAL_CLOSE_EVENTS,
 )
+from grid_core import CloseReason  # type: ignore
 
 
 class FakeManager:
@@ -105,6 +107,33 @@ def test_irrelevant_reasons_ignored():
     assert not m.pause_extends, "non-cluster reasons must not arm the gate"
 
 
+def test_engine_close_events_cover_all_smart_close_reasons():
+    """Manager must break on every reason the engine can finalise a grid with.
+
+    If an engine reason isn't in ENGINE_FINAL_CLOSE_EVENTS, the tick loop
+    falls through and the close gets relabelled `timeout` later, which
+    starves the cluster gate and corrupts post-trade analytics. Excludes
+    PARTIAL_CLOSE — that's a scale-out, not a finalisation.
+    """
+    engine_finals = {r.value for r in CloseReason if r.value != "partial_close"}
+    missing = engine_finals - set(ENGINE_FINAL_CLOSE_EVENTS)
+    assert not missing, f"manager misses engine final-close reasons: {missing}"
+
+
+def test_engine_close_events_excludes_partial_close():
+    assert "partial_close" not in ENGINE_FINAL_CLOSE_EVENTS, (
+        "partial_close is a scale-out, not a finalisation — including it "
+        "would break recovery-window grids on first floor breach"
+    )
+
+
+def test_cluster_reasons_subset_of_engine_finals():
+    """The cluster gate's input set must be a subset of what the manager
+    actually persists, otherwise the gate can never fire."""
+    leak = set(DRAWDOWN_CLUSTER_REASONS) - set(ENGINE_FINAL_CLOSE_EVENTS)
+    assert not leak, f"cluster reasons not in manager's break set: {leak}"
+
+
 def test_extending_active_pause():
     m = FakeManager()
     base = 1_000_000.0
@@ -123,6 +152,9 @@ def run_unit_tests():
         test_spread_outside_window_no_pause,
         test_spike_close_also_counts,
         test_irrelevant_reasons_ignored,
+        test_engine_close_events_cover_all_smart_close_reasons,
+        test_engine_close_events_excludes_partial_close,
+        test_cluster_reasons_subset_of_engine_finals,
         test_extending_active_pause,
     ]
     failed = 0

@@ -354,6 +354,10 @@ def _coerce_state(raw: dict | None) -> dict:
     if isinstance(portfolio_exposure, dict):
         normalized["portfolio_exposure"] = portfolio_exposure
 
+    cluster_gate = raw.get("cluster_gate")
+    if isinstance(cluster_gate, dict):
+        normalized["cluster_gate"] = cluster_gate
+
     return normalized
 
 

@@ -249,6 +249,18 @@ DRAWDOWN_CLUSTER_THRESHOLD = int(os.getenv("DRAWDOWN_CLUSTER_THRESHOLD", "3"))
 DRAWDOWN_CLUSTER_PAUSE_SEC = float(os.getenv("DRAWDOWN_CLUSTER_PAUSE_SEC", "600"))
 DRAWDOWN_CLUSTER_REASONS = frozenset({"drawdown", "spike_close"})
 
+# Full set of engine smart-close events that finalise a grid. The manager's
+# tick loop must break on any of these so the close is persisted with the
+# engine's actual reason — otherwise the position lives until the profile
+# timeout fires and the close is silently relabelled "timeout", which both
+# corrupts post-trade analysis and starves the cluster gate above of its
+# inputs. Keep in sync with grid_core.CloseReason. `partial_close` is
+# intentionally excluded — it's a scale-out that keeps the grid running.
+ENGINE_FINAL_CLOSE_EVENTS = frozenset({
+    "target_hit", "drawdown", "spike_close", "exposure_breach",
+    "grid_imbalance", "time_decay", "momentum_exit",
+})
+
 
 def normalize_grid_density(
     num_grids: int,
@@ -1962,7 +1974,7 @@ class MultiGridManager:
                                 logger.error(f"Failed to record fill: {e}")
 
                     # v3: Handle new adaptive grid events
-                    if event in {"target_hit", "drawdown", "spike_close", "exposure_breach"}:
+                    if event in ENGINE_FINAL_CLOSE_EVENTS:
                         close_reason = event
                         break
                     elif event == "cycle_complete":
@@ -2824,6 +2836,17 @@ def _push_api_state(manager):
             "paused": manager._deployment_paused_until > time.time(),
             "pause_reason": getattr(manager, "_pause_reason", None),
         }
+        cluster_ts = getattr(manager, "_cluster_close_ts", None)
+        cluster_active_count = 0
+        if cluster_ts is not None:
+            cutoff = time.time() - DRAWDOWN_CLUSTER_WINDOW_SEC
+            cluster_active_count = sum(1 for t in cluster_ts if t >= cutoff)
+        cluster_state = {
+            "active_count": cluster_active_count,
+            "threshold": DRAWDOWN_CLUSTER_THRESHOLD,
+            "window_sec": DRAWDOWN_CLUSTER_WINDOW_SEC,
+            "paused_until": manager._deployment_paused_until if cluster_active_count >= DRAWDOWN_CLUSTER_THRESHOLD else 0,
+        }
         state = {
             "mode": "running" if manager._running else ("paused" if manager._deployment_paused_until > time.time() else "stopped"),
             "writer_pid": os.getpid(),
@@ -2848,6 +2871,7 @@ def _push_api_state(manager):
                 "active_pnl": round(active_pnl, 4),
             },
             "portfolio_exposure": exposure,
+            "cluster_gate": cluster_state,
             "current_prices": {
                 slot.symbol: slot.engine.get_status().get("current_price", 0)
                 for slot in manager.slots.values()
