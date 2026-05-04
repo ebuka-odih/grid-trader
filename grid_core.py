@@ -217,6 +217,14 @@ class SmartCloseConfig:
     recovery_min_depth_pct: float = 8.0  # Only check if >8% margin underwater
     recovery_max_hours: float = 6.0      # If >6 hours at this depth, unlikely to recover
 
+    # ── Minimum position age ─────────────────────────────────
+    # No close (not even hard floor) can fire on a position younger than
+    # this. Protects against initial-deployment noise: a fresh grid
+    # filling its first 1-3 levels can show an apparent 15%+ margin loss
+    # before any meaningful price action — that's the entry-price ladder,
+    # not real distress. After this age, all the normal triggers apply.
+    min_position_age_sec: float = 90.0
+
     # ── Premature-close protection ─────────────────────────────
     # After any new fill the grid is still actively working — give it room
     # to do its job before any smart-close trigger fires. Bypassed only by
@@ -509,20 +517,39 @@ class SmartCloseEngine:
         if position.is_flat:
             return None
 
+        # ── Minimum position age ──
+        # A brand-new grid filling its first few levels can briefly show a
+        # large apparent margin loss that is just the cost basis re-spreading
+        # across more fills. Don't close anything in the first
+        # `min_position_age_sec` seconds — let the grid actually establish.
+        if position.age_seconds < self.config.min_position_age_sec:
+            return None
+
         # ── Loss measurement ──
         # `loss_pct` is the loss as a percentage of allocated margin (real
         # money risk), NOT a percentage of entry price. Margin-% is leverage-
         # aware: a 5% margin loss means you lost $0.50 on $10 allocated,
-        # regardless of leverage. Price-% on the other hand swings 50× harder
-        # at 50× leverage and made the previous hard floor unreachable until
-        # catastrophic moves.
+        # regardless of leverage.
+        #
+        # SCALE-OUT INTERACTION: once a position has been scaled out, the
+        # already-realized loss from the half-close is a sunk cost. Counting
+        # it toward `loss_pct` for the hard-floor check would re-fire the
+        # floor on the very next tick (since realized + unrealized still
+        # adds up to the same amount). Instead, post-scale-out the floor
+        # measures only the unrealized PnL on the remaining position — so
+        # the floor can only fire again if the price moves FURTHER against
+        # us by another floor's worth on the smaller remaining size.
         position.update_unrealized(current_price)
-        total_pnl = position.realized_pnl + position.unrealized_pnl
-        if allocated_margin > 0:
-            loss_pct = -total_pnl / allocated_margin * 100
+        if position.scaled_out:
+            relevant_pnl = position.unrealized_pnl
+            margin_basis = allocated_margin / 2.0  # remaining qty exposes ~half the margin
         else:
-            # Fallback to price-% if we don't know the margin (callers should
-            # always pass it; this preserves existing tests).
+            relevant_pnl = position.realized_pnl + position.unrealized_pnl
+            margin_basis = allocated_margin
+        if margin_basis > 0:
+            loss_pct = -relevant_pnl / margin_basis * 100
+        else:
+            # Fallback to price-% if we don't know the margin.
             if position.side == "Buy":
                 loss_pct = (position.entry_price - current_price) / position.entry_price * 100
             else:

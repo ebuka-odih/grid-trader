@@ -249,6 +249,7 @@ class TestSmartClose(unittest.TestCase):
             recovery_window_sec=10.0,
             recovery_partial_pct=30.0,
             hard_loss_pct_floor=10.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(
@@ -273,6 +274,7 @@ class TestSmartClose(unittest.TestCase):
             recovery_window_sec=600.0,
             hard_loss_pct_floor=4.0,
             scale_out_fraction=1.0,  # disable scale-out: floor breach = full close
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         # qty=2.5, entry=100, current=98 → unrealized = -5.0 = 50% margin loss
@@ -337,6 +339,7 @@ class TestMarginBasedLossPct(unittest.TestCase):
             scale_out_fraction=1.0,  # disable scale-out for this test
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(cfg)
         pos = GridPosition(side="Buy", qty=5.0, entry_price=100.0,
@@ -353,6 +356,7 @@ class TestScaleOut(unittest.TestCase):
             scale_out_fraction=0.5,
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(cfg)
         pos = GridPosition(side="Buy", qty=5.0, entry_price=100.0,
@@ -368,6 +372,7 @@ class TestScaleOut(unittest.TestCase):
             scale_out_fraction=0.5,
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(cfg)
         pos = GridPosition(side="Buy", qty=2.5, entry_price=100.0,
@@ -376,6 +381,64 @@ class TestScaleOut(unittest.TestCase):
         # 25% margin loss again.
         reason = engine.check_smart_close(pos, 99.0, 10.0, GridImbalance(), 4)
         self.assertEqual(reason, CloseReason.DRAWDOWN)
+
+    def test_post_scale_out_uses_unrealized_only_for_floor(self):
+        # After scale-out, the realized portion of the loss is a sunk cost.
+        # The floor on the remainder must measure ONLY unrealized PnL on the
+        # smaller remaining position — otherwise it fires again on the next
+        # tick (since realized + unrealized still adds up to the original loss).
+        cfg = SmartCloseConfig(
+            hard_loss_pct_floor=15.0,
+            scale_out_fraction=0.5,
+            min_seconds_since_last_fill=0.0,
+            recovery_window_sec=300.0,
+            min_position_age_sec=0.0,
+        )
+        engine = SmartCloseEngine(cfg)
+        # Position has already been scaled out: half qty, with -$1 realized
+        # already booked from the first half-close at the floor price.
+        pos = GridPosition(
+            side="Buy", qty=2.5, entry_price=100.0,
+            opened_at=time.time() - 600, last_fill_at=time.time() - 1000,
+            scaled_out=True,
+        )
+        pos.realized_pnl = -1.5  # banked from the first half-close
+        # Current price = 99.4 → unrealized on remaining 2.5 = 2.5 * (99.4 - 100) = -1.5
+        # OLD (broken): loss_pct = -(realized + unrealized)/$10 * 100 = 30% → fires floor
+        # NEW: loss_pct = -unrealized / ($10/2) * 100 = 1.5/5*100 = 30% — still fires
+        # Test: with current price = 99.85 → unrealized = -0.375, half-margin = $5
+        #       new loss_pct = 7.5% (under 15% floor) → HOLD (was firing before fix)
+        result = engine.check_smart_close(pos, 99.85, 10.0, GridImbalance(), 4)
+        self.assertIsNone(result)
+
+    def test_min_position_age_blocks_close(self):
+        # No close fires (not even hard floor) on a position younger than
+        # min_position_age_sec — protects against new-deploy noise.
+        cfg = SmartCloseConfig(
+            hard_loss_pct_floor=10.0,
+            scale_out_fraction=1.0,
+            min_seconds_since_last_fill=0.0,
+            recovery_window_sec=0.0,
+            min_position_age_sec=90.0,
+        )
+        engine = SmartCloseEngine(cfg)
+        # 30s old, deep loss → still hold.
+        pos_young = GridPosition(
+            side="Buy", qty=5.0, entry_price=100.0,
+            opened_at=time.time() - 30, last_fill_at=time.time() - 1000,
+        )
+        self.assertIsNone(
+            engine.check_smart_close(pos_young, 98.0, 10.0, GridImbalance(), 4)
+        )
+        # 100s old, same loss → fires.
+        pos_old = GridPosition(
+            side="Buy", qty=5.0, entry_price=100.0,
+            opened_at=time.time() - 100, last_fill_at=time.time() - 1000,
+        )
+        self.assertEqual(
+            engine.check_smart_close(pos_old, 98.0, 10.0, GridImbalance(), 4),
+            CloseReason.DRAWDOWN,
+        )
 
     def test_perform_partial_close_halves_qty(self):
         pos = GridPosition()
@@ -395,6 +458,7 @@ class TestScaleOut(unittest.TestCase):
             scale_out_fraction=1.0,
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(cfg)
         pos = GridPosition(side="Buy", qty=4.0, entry_price=100.0,

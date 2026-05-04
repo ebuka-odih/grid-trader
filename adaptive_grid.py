@@ -584,10 +584,14 @@ def default_config() -> AdaptiveConfig:
         spike_window_sec=10.0,
         spike_threshold_pct=0.7,
         spike_cooldown_sec=30.0,
-        # Exposure cap — close excess on breach (not just freeze)
-        # Tighter than before: 3 consecutive same-side fills indicates a
-        # one-directional move; closing the loser sooner caps the per-trade
-        # loss instead of waiting for the hard floor at the bottom of the grid.
-        max_same_side_fills=3,
-        hedge_on_breach=True,
+        # Exposure cap — freeze (don't auto-close) on breach.
+        # 4 consecutive same-side fills triggers a freeze: pauses new fills
+        # but lets the position run for the smart-close engine to manage.
+        # Auto-closing on the 3rd fill was too aggressive — closed normal
+        # grid wobble during initial deployment as if it were a real trend.
+        # The hard-floor + scale-out + recovery window handles real
+        # directional moves; the exposure cap just stops the position from
+        # ballooning while smart-close decides.
+        max_same_side_fills=4,
+        hedge_on_breach=False,
     )

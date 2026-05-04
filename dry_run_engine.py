@@ -61,14 +61,19 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         min_seconds_since_last_fill=_f("SMART_CLOSE_POST_FILL_COOLDOWN_SEC", 180.0),
         recovery_window_sec=_f("SMART_CLOSE_RECOVERY_WINDOW_SEC", 300.0),
         recovery_partial_pct=_f("SMART_CLOSE_RECOVERY_PARTIAL_PCT", 30.0),
-        # Hard floor lowered (20→12) after live data showed avg_loss=-$2 was
-        # destroying the +$0.30 avg_win edge despite 87% win rate. With
-        # scale-out at 50%, expected loss per stop drops to ~-$0.60-1.00 —
-        # restoring meaningful positive expectancy.
-        hard_loss_pct_floor=_f("HARD_FLOOR_BASE_PCT", 12.0),
-        hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 10.0),
-        hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 18.0),
+        # Hard floor calibrated to leverage-aware noise:
+        # - 12% was too tight: at 50x leverage, 12% margin = 0.24% price move,
+        #   well within ranging-market noise. Stops fired in 1-3 minutes on
+        #   normal grid wobble.
+        # - 20% was too loose: avg_loss reached -$2 vs avg_win +$0.30.
+        # - 15-18% is the sweet spot: real distress without noise stops.
+        # Combined with the post-scale-out fix (only unrealized counts after
+        # the half-close), the recovery window has real room to work.
+        hard_loss_pct_floor=_f("HARD_FLOOR_BASE_PCT", 15.0),
+        hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 12.0),
+        hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 22.0),
         scale_out_fraction=_f("SCALE_OUT_FRACTION", 0.5),
+        min_position_age_sec=_f("SMART_CLOSE_MIN_POS_AGE_SEC", 90.0),
         tp_floor_pct=_f("DYNAMIC_TP_FLOOR_PCT", 3.0),
         tp_min_age_full_target_min=_f("DYNAMIC_TP_FULL_TARGET_MIN", 10.0),
         tp_decay_step_pct=_f("DYNAMIC_TP_DECAY_STEP_PCT", 2.0),

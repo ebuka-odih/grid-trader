@@ -107,7 +107,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             leverage=1,
             order_size_usdt=1.0,
         )
-        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0)
+        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0, opened_at=time.time() - 600)
         pos.update_unrealized(100.0)
         engine.state = DryRunState(
             grid=grid,
@@ -144,7 +144,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             leverage=1,
             order_size_usdt=1.0,
         )
-        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0)
+        pos = GridPosition(side="Buy", qty=1.0, entry_price=100.0, opened_at=time.time() - 600)
         pos.update_unrealized(100.0)
         engine.state = DryRunState(
             grid=grid,

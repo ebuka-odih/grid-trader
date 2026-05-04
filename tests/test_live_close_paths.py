@@ -21,6 +21,7 @@ def _make_engine(scale_out_fraction=0.5, hard_floor=20.0):
         hard_loss_pct_floor=hard_floor,
         min_seconds_since_last_fill=0.0,
         recovery_window_sec=0.0,
+        min_position_age_sec=0.0,
     )
     eng = LiveEngine(smart_close_config=cfg)
     eng._grid_engine = MagicMock()
@@ -86,7 +87,7 @@ class FlattenAndCancelTests(unittest.IsolatedAsyncioTestCase):
         alerter = MagicMock()
         alerter.send = AsyncMock()
         eng = LiveEngine(
-            smart_close_config=SmartCloseConfig(scale_out_fraction=1.0),
+            smart_close_config=SmartCloseConfig(scale_out_fraction=1.0, min_position_age_sec=0.0),
             alerter=alerter,
         )
         eng._grid_engine = MagicMock()
