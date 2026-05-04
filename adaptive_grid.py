@@ -584,7 +584,10 @@ def default_config() -> AdaptiveConfig:
         spike_window_sec=10.0,
         spike_threshold_pct=0.7,
         spike_cooldown_sec=30.0,
-        # Exposure cap — freeze on breach
-        max_same_side_fills=5,
-        hedge_on_breach=False,
+        # Exposure cap — close excess on breach (not just freeze)
+        # Tighter than before: 3 consecutive same-side fills indicates a
+        # one-directional move; closing the loser sooner caps the per-trade
+        # loss instead of waiting for the hard floor at the bottom of the grid.
+        max_same_side_fills=3,
+        hedge_on_breach=True,
     )
