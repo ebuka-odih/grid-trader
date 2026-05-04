@@ -474,6 +474,76 @@ class TestScaleOut(unittest.TestCase):
         )
 
 
+class TestImbalanceEmergencyBypass(unittest.TestCase):
+    """Option A: severe imbalance + meaningful loss should bypass cooldown."""
+
+    def _engine(self, **overrides):
+        cfg = SmartCloseConfig(
+            min_seconds_since_last_fill=180.0,    # cooldown active
+            recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
+            hard_loss_pct_floor=20.0,             # don't trip floor
+            scale_out_fraction=1.0,
+            imbalance_emergency_ratio=5.0,
+            imbalance_emergency_min_fills=5,
+            imbalance_emergency_min_loss_pct=5.0,
+            imbalance_close_enabled=True,
+        )
+        for k, v in overrides.items():
+            setattr(cfg, k, v)
+        return SmartCloseEngine(cfg)
+
+    def test_emergency_bypass_fires_on_severe_imbalance(self):
+        # 6 Buy fills, 1 Sell = 6:1 ratio (>=5). 8% loss (>=5). Cooldown active.
+        # Position is on the dominant (Buy) side. Should fire even within cooldown.
+        engine = self._engine()
+        pos = GridPosition(
+            side="Buy", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 200, last_fill_at=time.time() - 1,  # cooldown active
+        )
+        imb = GridImbalance(
+            buy_fills=6, sell_fills=1, last_side="Buy", consecutive_same_side=5,
+        )
+        # qty=4, current=99.8 → unr = 4 * -0.2 = -0.8 = 8% margin loss
+        result = engine.check_smart_close(pos, 99.8, 10.0, imb, total_fills=7)
+        self.assertEqual(result, CloseReason.GRID_IMBALANCE)
+
+    def test_emergency_bypass_does_not_fire_below_loss_threshold(self):
+        # Same imbalance but only 3% loss — below emergency threshold → defer to cooldown.
+        engine = self._engine()
+        pos = GridPosition(
+            side="Buy", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 200, last_fill_at=time.time() - 1,
+        )
+        imb = GridImbalance(buy_fills=6, sell_fills=1, last_side="Buy", consecutive_same_side=5)
+        # 3% loss
+        result = engine.check_smart_close(pos, 99.925, 10.0, imb, total_fills=7)
+        self.assertIsNone(result)  # cooldown blocks regular imbalance check
+
+    def test_emergency_bypass_does_not_fire_on_minority_side(self):
+        # Position on the MINORITY side — opposite of imbalance — should hold.
+        engine = self._engine()
+        pos = GridPosition(
+            side="Sell", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 200, last_fill_at=time.time() - 1,
+        )
+        imb = GridImbalance(buy_fills=6, sell_fills=1, last_side="Buy", consecutive_same_side=5)
+        # 8% loss but Sell side = minority
+        result = engine.check_smart_close(pos, 100.2, 10.0, imb, total_fills=7)
+        self.assertIsNone(result)
+
+    def test_emergency_bypass_does_not_fire_below_min_fills(self):
+        # Severe ratio but only 4 total fills — under min — defer.
+        engine = self._engine(imbalance_emergency_min_fills=5)
+        pos = GridPosition(
+            side="Buy", qty=4.0, entry_price=100.0,
+            opened_at=time.time() - 200, last_fill_at=time.time() - 1,
+        )
+        imb = GridImbalance(buy_fills=4, sell_fills=0, last_side="Buy", consecutive_same_side=4)
+        result = engine.check_smart_close(pos, 99.8, 10.0, imb, total_fills=4)
+        self.assertIsNone(result)
+
+
 class TestDynamicTakeProfit(unittest.TestCase):
     def _engine(self, **overrides) -> SmartCloseEngine:
         cfg = SmartCloseConfig(

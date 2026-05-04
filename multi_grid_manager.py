@@ -1726,6 +1726,36 @@ class MultiGridManager:
 
 
 
+            # ── Option C: asymmetric qty on the averaging-down side ──
+            # Scale down qty on the side that adds to a losing position when
+            # price moves against the bias. For 'long' bias, that's the deep
+            # Buy ladder below current price — reducing that qty caps how
+            # much we average-down into a falling-knife scenario.
+            # `bias_avg_down_qty_factor` is configurable via env (default 0.5).
+            try:
+                qty_factor = float(os.getenv("BIAS_AVG_DOWN_QTY_FACTOR", "0.5"))
+            except (TypeError, ValueError):
+                qty_factor = 0.5
+            qty_factor = max(0.1, min(1.0, qty_factor))
+
+            if direction == "long":
+                # Reduce Buy-side qty on levels below price (averaging-down).
+                for lvl in grid.grid_levels:
+                    if lvl.side == "Buy" and lvl.price < price:
+                        lvl.qty = round(lvl.qty * qty_factor, 6)
+            elif direction == "short":
+                # Reduce Sell-side qty on levels above price (averaging-up).
+                for lvl in grid.grid_levels:
+                    if lvl.side == "Sell" and lvl.price > price:
+                        lvl.qty = round(lvl.qty * qty_factor, 6)
+
+            logger.info(
+                f"📐 ASYMMETRIC GRID ({direction}): {coin_score.symbol} | "
+                f"avg-down qty x{qty_factor:.2f}"
+            )
+
+
+
         # v4: Create appropriate state based on engine type
         from live_engine import LiveEngine
         
@@ -1970,7 +2000,7 @@ class MultiGridManager:
 
                     if (
                         stale_reason == "losing_stagnant"
-                        and loss_pct_margin > 5.0
+                        and loss_pct_margin > 1.0
                         and age_min < hard_max_min
                     ):
                         # Let smart-close handle it.
@@ -2111,9 +2141,12 @@ class MultiGridManager:
                     hard_max_min = float(os.getenv("GRID_HARD_MAX_MINUTES", "240"))
                     age_min = (now - start) / 60
 
-                    if loss_pct_margin > 5.0 and age_min < hard_max_min:
-                        # Losing > 5% margin and inside hard cap — let it
-                        # cook. Throttle the warning so we don't spam logs.
+                    if loss_pct_margin > 1.0 and age_min < hard_max_min:
+                        # Any losing position (>1% margin) inside the hard cap
+                        # is held for smart-close to manage. Avoids realising
+                        # small losses on profile timeout that would likely
+                        # have recovered with a few more minutes. Throttle the
+                        # warning so we don't spam logs.
                         if int(age_min) % 5 == 0:
                             logger.warning(
                                 f"⏰ [#{slot.slot_id}] Profile timeout ({profile_timeout}m) "

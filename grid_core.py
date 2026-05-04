@@ -205,6 +205,15 @@ class SmartCloseConfig:
     imbalance_close_enabled: bool = True
     imbalance_ratio_threshold: float = 3.0  # 3:1 buy:sell = close losers
     imbalance_min_fills: int = 6             # Need at least 6 fills before checking
+
+    # ── Emergency imbalance bypass ───────────────────────────────
+    # When the grid is filling rapidly in one direction (severe imbalance +
+    # meaningful loss), bypass the post-fill cooldown so the close fires
+    # BEFORE the hard floor catches the position. Prevents the "trending grid
+    # that hits floor before any other check could fire" failure mode.
+    imbalance_emergency_ratio: float = 5.0
+    imbalance_emergency_min_fills: int = 5
+    imbalance_emergency_min_loss_pct: float = 5.0  # margin %
     
     # Trailing stop on underwater positions (margin-%)
     trailing_stop_enabled: bool = True
@@ -592,6 +601,26 @@ class SmartCloseEngine:
                 f"{floor_pct:.2f}% — closing remainder (already scaled out)"
             )
             return CloseReason.DRAWDOWN
+
+        # ── Emergency imbalance bypass (Option A) ──
+        # In a fast trending market, the grid can fill 5+ levels on one side
+        # within seconds. The post-fill cooldown (below) would normally block
+        # the imbalance check until those 180s elapse — by which time the
+        # hard floor has already fired. This bypass lets a SEVERE imbalance
+        # (>=5:1) close the loser early, BEFORE the floor catches it.
+        if (
+            self.config.imbalance_close_enabled
+            and total_fills >= self.config.imbalance_emergency_min_fills
+            and imbalance.imbalance_ratio >= self.config.imbalance_emergency_ratio
+            and loss_pct >= self.config.imbalance_emergency_min_loss_pct
+            and position.side == imbalance.dominant_side
+        ):
+            logger.warning(
+                f"⚡ EMERGENCY IMBALANCE ({position.side}): "
+                f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
+                f"loss={loss_pct:.2f}% — bypassing cooldown"
+            )
+            return CloseReason.GRID_IMBALANCE
 
         # ── Post-fill cooldown: let the grid work after a recent fill ──
         sec_since_fill = self._seconds_since_last_fill(position)
