@@ -1,10 +1,14 @@
 """
 Admin API for grid-trader.
 
-Authenticates against ADMIN_PASSWORD (env), issues bearer tokens with TTL,
-exposes endpoints to read tunables/schema and write tunables + encrypted
-secrets, and supports an Apply (graceful container exit so docker-compose
-restarts with the new config).
+Authenticates against ADMIN_PASSWORD_HASH (bcrypt hash in .env), issues
+bearer tokens with TTL, exposes endpoints to read tunables/schema and
+write tunables + encrypted secrets, and supports an Apply (graceful
+container exit so docker-compose restarts with the new config).
+
+To bootstrap a password, run:
+    python admin.py hash-password
+and paste the printed line into .env, then restart the container.
 
 Routes (all under /api/admin):
   POST /login            { password } -> { token, expires_at }
@@ -21,8 +25,6 @@ again from the UI).
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -30,6 +32,8 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+import bcrypt
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel
@@ -56,16 +60,26 @@ _tokens: dict[str, float] = {}  # token -> expires_at
 
 # ── Auth helpers ─────────────────────────────────────────────────────────
 
-def _admin_password() -> str:
-    return os.environ.get("ADMIN_PASSWORD", "") or ""
+def _admin_password_hash() -> str:
+    """Return the bcrypt hash from env. Empty string disables admin entirely."""
+    return os.environ.get("ADMIN_PASSWORD_HASH", "") or ""
 
 
 def _verify_password(provided: str) -> bool:
-    expected = _admin_password()
-    if not expected:
+    """Verify a plaintext password against the stored bcrypt hash.
+
+    bcrypt.checkpw is constant-time relative to the hash, defeating
+    timing side-channels. Returns False if no hash is configured (admin
+    disabled) or the hash is malformed.
+    """
+    expected = _admin_password_hash()
+    if not expected or not provided:
         return False
-    # constant-time compare to defeat timing attacks
-    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+    try:
+        return bcrypt.checkpw(provided.encode("utf-8"), expected.encode("utf-8"))
+    except (ValueError, TypeError):
+        # Malformed hash (e.g. user pasted the plaintext password by mistake)
+        return False
 
 
 def _issue_token() -> tuple[str, float]:
@@ -111,15 +125,15 @@ class SecretsUpdate(BaseModel):
 @router.get("/status")
 def status_endpoint() -> dict:
     """Pre-login status. Tells the UI whether admin is even available
-    (ADMIN_PASSWORD set?) and which secrets are currently configured."""
-    has_pw = bool(_admin_password())
+    (ADMIN_PASSWORD_HASH set?) and which secrets are currently configured."""
+    has_hash = bool(_admin_password_hash())
     # Probe which secrets currently have values in env (post-overlay).
     secret_keys_set = []
     for key in SECRET_FIELDS:
         if os.environ.get(key):
             secret_keys_set.append(key)
     return {
-        "has_admin_password": has_pw,
+        "has_admin_password": has_hash,  # name kept for UI compat
         "secret_keys_set": secret_keys_set,
     }
 
@@ -229,12 +243,11 @@ def put_settings(req: SettingsUpdate, authorization: Optional[str] = Header(None
 @router.put("/secrets")
 def put_secrets(req: SecretsUpdate, authorization: Optional[str] = Header(None)) -> dict:
     _require_token(authorization)
-    if not _admin_password():
-        raise HTTPException(status_code=503, detail="ADMIN_PASSWORD not set on server")
 
     # Merge with existing decrypted secrets so the caller can update one
-    # field without losing the others.
-    existing = _decrypt_secrets(_admin_password())
+    # field without losing the others. Encryption uses /data/secrets.key,
+    # not the admin password — see runtime_config.py.
+    existing = _decrypt_secrets()
     merged = dict(existing)
     for key, value in req.values.items():
         if key not in SECRET_FIELDS:
@@ -246,7 +259,10 @@ def put_secrets(req: SecretsUpdate, authorization: Optional[str] = Header(None))
             merged[key] = str(value)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    blob = encrypt_secrets(merged, _admin_password())
+    try:
+        blob = encrypt_secrets(merged)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     tmp_path = RUNTIME_SECRETS_PATH.with_suffix(".tmp")
     tmp_path.write_bytes(blob)
     try:
@@ -287,3 +303,34 @@ def apply_endpoint(authorization: Optional[str] = Header(None)) -> dict:
     sentinel.write_text(str(time.time()))
     logger.warning(f"apply requested — restart sentinel written: {sentinel}")
     return {"ok": True, "sentinel": str(sentinel)}
+
+
+# ── CLI helper: bcrypt hash a password for .env ─────────────────────────
+
+def _hash_password_cli() -> int:
+    """Read a password from stdin (no echo), print the bcrypt hash line."""
+    import getpass
+    pw = getpass.getpass("Password: ")
+    if not pw:
+        print("Empty password, aborting.")
+        return 1
+    pw2 = getpass.getpass("Confirm: ")
+    if pw != pw2:
+        print("Passwords don't match, aborting.")
+        return 1
+    h = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    print()
+    print("Add the following line to .env (and remove any old ADMIN_PASSWORD line):")
+    print()
+    print(f"ADMIN_PASSWORD_HASH={h}")
+    print()
+    print("Then restart the container: docker compose up -d --force-recreate")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("hash-password", "hash"):
+        sys.exit(_hash_password_cli())
+    print(f"Usage: python {sys.argv[0]} hash-password")
+    sys.exit(2)

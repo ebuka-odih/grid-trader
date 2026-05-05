@@ -3,25 +3,29 @@ Runtime config + secret overlay for grid-trader.
 
 Bot processes (multi_grid_manager, grid_api) import this module *first*,
 before any other module that reads `os.getenv` at import time. The overlay
-loads two files from /data:
+loads three files from /data:
 
   runtime_config.json   — plaintext tunable overrides (thresholds, sizing)
   runtime_secrets.bin   — Fernet-encrypted API keys and tokens
+  secrets.key           — random 32-byte master key (auto-generated)
 
-Both files are written by admin.py via authenticated UI requests. They
+Both data files are written by admin.py via authenticated UI requests. They
 *overlay* values onto os.environ, so all downstream `os.getenv(...)` calls
 transparently see the user-supplied values without code changes.
 
 Threat model:
   - The data volume is on the host filesystem. Anyone with shell access to
     the VPS can read runtime_config.json. Treat tunables as non-sensitive.
-  - runtime_secrets.bin is encrypted with Fernet (AES-128-CBC + HMAC-SHA256)
-    using a key derived from ADMIN_PASSWORD via PBKDF2-HMAC-SHA256 with a
-    randomly generated, persisted salt and 480_000 iterations. An attacker
-    with the file but not the password cannot recover the plaintext keys.
-  - If ADMIN_PASSWORD is rotated, existing secrets become unreadable. The
-    user re-enters them through the UI, which is acceptable for a personal
-    deployment.
+  - runtime_secrets.bin is encrypted with Fernet (AES-128-CBC + HMAC-SHA256).
+    The master key lives in /data/secrets.key (chmod 600), generated once
+    on first boot. The admin login password is intentionally NOT involved
+    in encryption: it lives in .env as a bcrypt hash for login auth only,
+    so password rotation no longer locks the bot out of saved secrets.
+  - If both /data/secrets.key and runtime_secrets.bin leak together, the
+    saved API keys are exposed. Defense is filesystem isolation (chmod
+    600, the secrets.key is not in .env or any backup of .env).
+  - If only the .env file leaks, the bcrypt hash protects the login
+    password from direct recovery (must be cracked offline).
 
 Fields exposed:
   CONFIG_SCHEMA below is the source of truth. UI reads it to render the
@@ -44,7 +48,11 @@ logger = logging.getLogger("runtime_config")
 DATA_DIR = Path(os.getenv("GRID_TRADER_DATA_DIR", "/data"))
 RUNTIME_CONFIG_PATH = DATA_DIR / "runtime_config.json"
 RUNTIME_SECRETS_PATH = DATA_DIR / "runtime_secrets.bin"
-RUNTIME_SALT_PATH = DATA_DIR / "runtime_secrets.salt"
+# Master encryption key for runtime_secrets.bin. Decoupled from the admin
+# login password so the password can be hashed at rest. Generated on first
+# boot, persisted to disk with chmod 600. If this file is lost, saved
+# secrets become unreadable — re-enter them through the UI.
+SECRETS_KEY_PATH = DATA_DIR / "secrets.key"
 
 # ── Schema ──────────────────────────────────────────────────────────────
 # Each entry: env-var name -> {type, default, min?, max?, category, label, help}.
@@ -210,57 +218,54 @@ def _coerce(value: Any, spec: FieldSpec) -> str:
     return str(value)
 
 
-def _derive_key(password: str, salt: bytes) -> bytes:
-    """PBKDF2-HMAC-SHA256, 480_000 iters, 32-byte output → urlsafe-b64 for Fernet."""
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=480_000)
-    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+def _load_master_key() -> Optional[bytes]:
+    """Read /data/secrets.key, generating it once on first call if missing.
 
-
-def _get_or_make_salt() -> bytes:
-    if RUNTIME_SALT_PATH.exists():
-        try:
-            return RUNTIME_SALT_PATH.read_bytes()
-        except Exception as exc:
-            logger.warning(f"Could not read {RUNTIME_SALT_PATH}: {exc}")
-    salt = os.urandom(16)
+    Returns the 32-byte urlsafe-b64-encoded key suitable for Fernet, or
+    None on any I/O failure (logs but does not raise — the bot must still
+    boot even if the secrets infra is broken).
+    """
     try:
-        RUNTIME_SALT_PATH.write_bytes(salt)
-        os.chmod(RUNTIME_SALT_PATH, 0o600)
+        if SECRETS_KEY_PATH.exists():
+            return SECRETS_KEY_PATH.read_bytes().strip()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        key = base64.urlsafe_b64encode(os.urandom(32))
+        SECRETS_KEY_PATH.write_bytes(key)
+        try:
+            os.chmod(SECRETS_KEY_PATH, 0o600)
+        except Exception:
+            pass
+        logger.info(f"Generated new secrets master key at {SECRETS_KEY_PATH}")
+        return key
     except Exception as exc:
-        logger.warning(f"Could not write salt: {exc}")
-    return salt
+        logger.warning(f"Could not access master key at {SECRETS_KEY_PATH}: {exc}")
+        return None
 
 
-def _decrypt_secrets(password: str) -> dict[str, str]:
-    """Decrypt runtime_secrets.bin with the password-derived key. Returns {} on any failure."""
+def _decrypt_secrets() -> dict[str, str]:
+    """Decrypt runtime_secrets.bin using the master key. Returns {} on any failure."""
     if not RUNTIME_SECRETS_PATH.exists():
         return {}
-    if not password:
-        logger.warning("Cannot decrypt secrets: ADMIN_PASSWORD not set")
+    key = _load_master_key()
+    if not key:
         return {}
     try:
-        from cryptography.fernet import Fernet, InvalidToken
-        salt = _get_or_make_salt()
-        key = _derive_key(password, salt)
+        from cryptography.fernet import Fernet
         token = RUNTIME_SECRETS_PATH.read_bytes()
         plaintext = Fernet(key).decrypt(token)
         data = json.loads(plaintext.decode("utf-8"))
         return data.get("values", {}) if isinstance(data, dict) else {}
     except Exception as exc:
-        # Catch InvalidToken plus anything else — never leak crypto details.
         logger.warning(f"Could not decrypt secrets: {type(exc).__name__}")
         return {}
 
 
-def encrypt_secrets(values: dict[str, str], password: str) -> bytes:
-    """Encrypt a dict of secrets for write to disk. Caller persists the bytes."""
-    if not password:
-        raise ValueError("ADMIN_PASSWORD not set")
+def encrypt_secrets(values: dict[str, str]) -> bytes:
+    """Encrypt a dict of secrets for write to disk using the master key."""
+    key = _load_master_key()
+    if not key:
+        raise RuntimeError("Master key unavailable; cannot encrypt secrets")
     from cryptography.fernet import Fernet
-    salt = _get_or_make_salt()
-    key = _derive_key(password, salt)
     payload = json.dumps({"values": values}).encode("utf-8")
     return Fernet(key).encrypt(payload)
 
@@ -287,21 +292,38 @@ def apply_overlay() -> dict[str, str]:
         except Exception as exc:
             logger.warning(f"Skipping {key}: {exc}")
 
-    # 2. Secrets (encrypted)
-    password = os.environ.get("ADMIN_PASSWORD", "")
-    if password:
-        secrets = _decrypt_secrets(password)
-        for key, value in secrets.items():
-            if not value:
-                continue
-            if CONFIG_SCHEMA.get(key) and CONFIG_SCHEMA[key].secret:
-                os.environ[key] = str(value)
-                applied[key] = "secret"
+    # 2. Secrets (encrypted with master key — independent of admin password)
+    secrets = _decrypt_secrets()
+    for key, value in secrets.items():
+        if not value:
+            continue
+        if CONFIG_SCHEMA.get(key) and CONFIG_SCHEMA[key].secret:
+            os.environ[key] = str(value)
+            applied[key] = "secret"
 
     if applied:
         logger.info(f"Runtime overlay applied: {len(applied)} keys "
                     f"({sum(1 for v in applied.values() if v == 'tunable')} tunables, "
                     f"{sum(1 for v in applied.values() if v == 'secret')} secrets)")
+
+    # Startup safety: if the user toggled DRY_RUN=false but no API keys are
+    # configured, force back to dry-run with a loud warning. Prevents the
+    # crash-loop where the live engine fails at startup, the manager exits,
+    # docker-compose restarts, and the same crash repeats every minute.
+    dry_run = (os.environ.get("DRY_RUN", "true").strip().lower()
+               in {"1", "true", "yes", "on"})
+    if not dry_run:
+        bybit_key = os.environ.get("BYBIT_API_KEY", "").strip()
+        bybit_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
+        if not bybit_key or not bybit_secret:
+            logger.warning(
+                "⚠️  DRY_RUN=false but BYBIT_API_KEY/SECRET are not set. "
+                "Forcing DRY_RUN=true to avoid live-engine startup failure. "
+                "Set keys via the admin UI (Settings → API Keys), then retry."
+            )
+            os.environ["DRY_RUN"] = "true"
+            applied["DRY_RUN"] = "fallback"
+
     return applied
 
 

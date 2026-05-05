@@ -5,6 +5,7 @@ aiosignal==1.4.0
 annotated-types==0.7.0
 anyio==4.13.0
 attrs==26.1.0
+bcrypt==4.2.1
 ccxt==4.5.50
 certifi==2026.4.22
 cffi==2.0.0
