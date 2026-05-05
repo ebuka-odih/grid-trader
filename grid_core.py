@@ -595,13 +595,27 @@ class SmartCloseEngine:
             meets_loss = loss_pct >= self.config.imbalance_emergency_min_loss_pct
             meets_age = position.age_seconds >= self.config.imbalance_emergency_min_age_sec
             if meets_loss and meets_age:
+                self._recovery_state.pop(position.side, None)
+                # First bypass hit: scale out half, give the rest a chance
+                # via the recovery window. Second hit (already scaled_out)
+                # closes the remainder. Mirrors the hard-floor pattern at
+                # line 648 below and roughly halves avg_loss on bypass
+                # closures vs the previous immediate-close behaviour.
+                if not position.scaled_out and self.config.scale_out_fraction < 1.0:
+                    logger.warning(
+                        f"⚡ EMERGENCY IMBALANCE ({position.side}): "
+                        f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
+                        f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s — "
+                        f"scaling out {self.config.scale_out_fraction*100:.0f}% "
+                        f"(first hit, recovery window opens)"
+                    )
+                    return CloseReason.PARTIAL_CLOSE
                 logger.warning(
                     f"⚡ EMERGENCY IMBALANCE ({position.side}): "
                     f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
                     f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s — "
-                    f"bypassing min-age + floor"
+                    f"closing remainder (already scaled out)"
                 )
-                self._recovery_state.pop(position.side, None)
                 return CloseReason.GRID_IMBALANCE
             elif not meets_age:
                 logger.info(

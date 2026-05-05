@@ -31,6 +31,14 @@ class TokenLearningState:
     avg_duration_seconds: float = 0.0
     cooldown_until: float = 0.0
     last_close_reason: str = ""
+    # Imbalance-specific tracker: append timestamp on every grid_imbalance
+    # close, prune entries older than imbalance_window_seconds. When the
+    # remaining count reaches imbalance_threshold the symbol gets a longer
+    # cooldown (imbalance_cooldown_seconds). Wins do NOT reset this — the
+    # signal is "this symbol hits one-directional fills under our current
+    # grid params during current trend regime" and that doesn't go away
+    # just because a few grids hit target between the bleeders.
+    imbalance_close_ts: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -47,7 +55,13 @@ class AdjustedCandidate:
 class ScannerLearning:
     """Score modifier for adaptive market scanning."""
 
-    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "agent_close", "emergency", "exposure_breach"}
+    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "agent_close", "emergency", "exposure_breach", "grid_imbalance"}
+    # Imbalance soft-blacklist: count grid_imbalance closes in a rolling
+    # window per symbol; trip a longer cooldown if the count crosses
+    # threshold. Tunable via env without code changes.
+    IMBALANCE_THRESHOLD = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_THRESHOLD", "2"))
+    IMBALANCE_WINDOW_SECONDS = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_WINDOW_SEC", "3600"))
+    IMBALANCE_COOLDOWN_SECONDS = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_COOLDOWN_SEC", "7200"))
     MIN_QUALITY_TRADES = int(os.getenv("MIN_SCANNER_QUALITY_TRADES", "5"))
     MIN_HISTORICAL_WIN_RATE = float(os.getenv("MIN_HISTORICAL_WIN_RATE", "0.80"))
     # User target: risk:reward above 1/5 means average reward should be at
@@ -108,6 +122,17 @@ class ScannerLearning:
 
         if state.recent_failures >= self.failure_threshold:
             state.cooldown_until = self._now_fn() + self.cooldown_seconds
+
+        # Imbalance soft-blacklist: track grid_imbalance closes only.
+        now = self._now_fn()
+        if close_reason == "grid_imbalance":
+            state.imbalance_close_ts.append(now)
+        cutoff = now - self.IMBALANCE_WINDOW_SECONDS
+        state.imbalance_close_ts = [t for t in state.imbalance_close_ts if t >= cutoff]
+        if len(state.imbalance_close_ts) >= self.IMBALANCE_THRESHOLD:
+            new_until = now + self.IMBALANCE_COOLDOWN_SECONDS
+            if new_until > state.cooldown_until:
+                state.cooldown_until = new_until
 
         self.save()
         return state
