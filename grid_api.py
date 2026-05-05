@@ -21,6 +21,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+# Overlay runtime_config + decrypted secrets onto os.environ BEFORE any
+# downstream module reads env. Keep this above the FastAPI import too —
+# admin.py imports runtime_config; doing it here makes the order obvious.
+import runtime_config  # noqa: F401  side-effect: applies overlay on import
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -487,6 +492,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Admin router ──────────────────────────────────────────
+# Authenticated config + secrets management. See admin.py for routes.
+from admin import router as admin_router
+app.include_router(admin_router)
 
 # ── WebSocket clients ─────────────────────────────────────
 class ConnectionManager:

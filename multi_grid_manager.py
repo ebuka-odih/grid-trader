@@ -63,6 +63,10 @@ import math
 import time
 import fcntl
 
+# Overlay runtime_config + decrypted secrets onto os.environ BEFORE any
+# import that reads env at module-level (config, coin_scanner, etc).
+import runtime_config  # noqa: F401  side-effect: applies overlay on import
+
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -838,6 +842,14 @@ class MultiGridManager:
         # if market data becomes stale.
 
         self._heartbeat_task = asyncio.create_task(self.heartbeat.run())
+
+
+
+        # Admin "Apply" watcher: when the UI writes /data/restart.signal,
+        # exit cleanly so docker-compose's restart policy brings us back
+        # up with the freshly-overlaid runtime_config + secrets.
+
+        self._restart_watcher_task = asyncio.create_task(self._restart_signal_watcher())
 
 
 
@@ -2549,6 +2561,44 @@ class MultiGridManager:
 
         logger.info(f"🔓 Slot #{slot.slot_id} freed | Active grids: {len(self.slots)}/{self.max_grids}")
 
+
+
+    # ── Admin Apply: watch for restart sentinel ──────────────────
+
+    async def _restart_signal_watcher(self):
+        """Poll /data/restart.signal; exit gracefully when admin clicks Apply.
+
+        The signal file is written by admin.py's /api/admin/apply handler.
+        We set _running=False, which causes the manager loop to drain and
+        the process to exit. The container entrypoint detects the manager
+        exit and brings the whole container down; docker-compose restart
+        policy ('unless-stopped') brings it back up, at which point
+        runtime_config.apply_overlay() at import time picks up the new
+        values from runtime_config.json and runtime_secrets.bin.
+        """
+        from pathlib import Path
+        sentinel = Path("/data/restart.signal")
+        last_seen_mtime = sentinel.stat().st_mtime if sentinel.exists() else 0.0
+        while self._running:
+            try:
+                await asyncio.sleep(5)
+                if not sentinel.exists():
+                    continue
+                mtime = sentinel.stat().st_mtime
+                if mtime > last_seen_mtime:
+                    logger.warning(
+                        "🔄 Admin Apply requested via UI — exiting cleanly so "
+                        "docker-compose can restart with new runtime config."
+                    )
+                    # Consume the signal so we don't loop on restart
+                    try:
+                        sentinel.unlink()
+                    except Exception:
+                        pass
+                    self._running = False
+                    return
+            except Exception as exc:
+                logger.warning(f"restart_signal_watcher error: {exc}")
 
 
     # ── Portfolio Status Broadcaster ──────────────────────────
