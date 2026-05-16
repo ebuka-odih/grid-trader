@@ -291,8 +291,10 @@ def simulate_grid(
     recenters = 0
     
     start_time = ticks[0][0]
-    end_time = ticks[-1][0]
     close_reason = "timeout"
+    closed_early = False
+    close_price = ticks[-1][1]
+    close_timestamp = ticks[-1][0]
     
     # Allocated margin for PnL targets
     allocated_margin = config.order_size_usdt * config.num_grids
@@ -303,6 +305,9 @@ def simulate_grid(
     old_price = ticks[0][1]
     
     for ts, price in ticks:
+        pending_recenter = False
+        pending_trail_shift = None
+
         # ── v3: Adaptive Processing ──────────────────────
         if adaptive:
             result = adaptive.on_price(price)
@@ -313,20 +318,30 @@ def simulate_grid(
                 continue
             
             if result.action == "close_excess":
+                if position_qty > 0 and entry_price > 0:
+                    if position_side == "Buy":
+                        unrealized_pnl = (price - entry_price) * position_qty
+                    else:
+                        unrealized_pnl = (entry_price - price) * position_qty
+                else:
+                    unrealized_pnl = 0.0
                 exposure_breaches += 1
+                total_pnl = realized_pnl + unrealized_pnl
                 close_reason = "exposure_breach"
+                close_price = price
+                close_timestamp = ts
+                closed_early = True
                 break
             
             if result.action == "freeze":
                 old_price = price
                 continue
             
-            if result.recentered:
+            pending_recenter = result.recentered
+            if pending_recenter:
                 recenters += 1
-                _handle_backtest_recenter(levels, filled_levels, adaptive, price, config)
             
-            if result.trail_shift is not None:
-                _handle_backtest_trail(levels, filled_levels, result.trail_shift)
+            pending_trail_shift = result.trail_shift
         
         # ── Fill Detection ───────────────────────────────
         for level in levels:
@@ -385,7 +400,14 @@ def simulate_grid(
                 
                 # Rebalance level on opposite side
                 level.status = "rebalanced"
-        
+
+        # ── Recenter/trail AFTER fills ───────────────────
+        if adaptive:
+            if pending_recenter:
+                _handle_backtest_recenter(levels, filled_levels, adaptive, price, config)
+            if pending_trail_shift is not None:
+                _handle_backtest_trail(levels, filled_levels, adaptive, pending_trail_shift)
+
         # ── Update Unrealized PnL ────────────────────────
         if position_qty > 0 and entry_price > 0:
             if position_side == "Buy":
@@ -415,26 +437,35 @@ def simulate_grid(
         # ── Check Close Conditions ───────────────────────
         if total_pnl >= target_pnl and len(fills) >= 2:
             close_reason = "target_hit"
+            close_price = price
+            close_timestamp = ts
+            closed_early = True
             break
         
         # Timeout check
         elapsed_hours = (ts - start_time) / 3600
         if elapsed_hours >= config.timeout_hours:
             close_reason = "timeout"
+            close_price = price
+            close_timestamp = ts
+            closed_early = True
             break
         
         old_price = price
     
-    # Final PnL
-    final_price = ticks[-1][1]
+    # Final PnL uses the actual close tick when the grid exited early.
+    final_price = close_price if closed_early else ticks[-1][1]
+    final_timestamp = close_timestamp if closed_early else ticks[-1][0]
     if position_qty > 0 and entry_price > 0:
         if position_side == "Buy":
             unrealized_pnl = (final_price - entry_price) * position_qty
         else:
             unrealized_pnl = (entry_price - final_price) * position_qty
-    
+    else:
+        unrealized_pnl = 0.0
+
     total_pnl = realized_pnl + unrealized_pnl
-    duration_hours = (ticks[-1][0] - start_time) / 3600
+    duration_hours = (final_timestamp - start_time) / 3600
     
     # Count buy/sell fills
     buy_fills = sum(1 for f in fills if f.side == "Buy")
@@ -462,7 +493,7 @@ def simulate_grid(
         exposure_breaches=exposure_breaches,
         duration_hours=round(duration_hours, 2),
         close_reason=close_reason,
-        close_timestamp=ticks[-1][0],
+        close_timestamp=final_timestamp,
         fills=fills,
     )
 
@@ -513,11 +544,13 @@ def _handle_backtest_recenter(
     levels.clear()
     levels.extend(new_levels)
     filled_levels.clear()
+    adaptive.exposure_cap.reset()
 
 
 def _handle_backtest_trail(
     levels: list[SimLevel],
     filled_levels: set,
+    adaptive: AdaptiveGrid,
     shift: float,
 ):
     """Handle grid trailing in backtest."""
@@ -525,6 +558,7 @@ def _handle_backtest_trail(
         level.price += shift
         level.status = "open"
     filled_levels.clear()
+    adaptive.exposure_cap.reset()
 
 
 # ── Report Generator ───────────────────────────────────────────
