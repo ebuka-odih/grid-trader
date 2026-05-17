@@ -46,6 +46,11 @@ class GridApiStateNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized['wallet']['exposure_pct'], 0.61)
         self.assertIn('scanner_candidates', normalized)
         self.assertEqual(normalized['scanner_candidates'], [])
+        self.assertIn('deploy_rejections', normalized)
+        self.assertEqual(normalized['deploy_rejections'], [])
+        self.assertIn('deploy_diagnostics', normalized)
+        self.assertEqual(normalized['deploy_diagnostics']['active_rejections'], 0)
+        self.assertEqual(normalized['deploy_diagnostics']['recent_rejections'], [])
         self.assertIn('completed_trades', normalized)
         self.assertEqual(normalized['completed_trades'], [])
         self.assertIn('current_prices', normalized)
@@ -113,6 +118,44 @@ class GridApiStateNormalizationTests(unittest.TestCase):
             self.assertEqual(wallet['balance'], 100.0)
             self.assertEqual(wallet['unrealized_pnl'], 0.2)
             self.assertEqual(wallet['equity'], 100.2)
+        finally:
+            grid_api._state = original_state
+
+    def test_deploy_rejections_endpoint_returns_state_payload(self):
+        original_state = grid_api._state
+        try:
+            grid_api._state = grid_api._coerce_state({
+                'deploy_rejections': [
+                    {
+                        'symbol': 'ETH/USDT:USDT',
+                        'stage': 'risk',
+                        'reasons': ['wallet exposure cap reached'],
+                        'cooldown_remaining_seconds': 27,
+                        'cooldown_active': True,
+                    }
+                ],
+                'deploy_diagnostics': {
+                    'free_slots': 3,
+                    'raw_candidates': 8,
+                    'post_capacity_candidates': 4,
+                    'post_prefilter_candidates': 2,
+                    'picked_candidates': 1,
+                    'active_rejections': 1,
+                    'recent_rejections': [{'symbol': 'ETH/USDT:USDT'}],
+                    'rejection_cooldown_seconds': 90,
+                    'min_rejection_cooldown_seconds': 20,
+                },
+            })
+            with patch.object(grid_api, '_load_state_file'), patch.object(
+                grid_api, '_viewer_session', return_value={'role': 'viewer'}
+            ):
+                payload = asyncio.run(grid_api.get_deploy_rejections())
+
+            self.assertEqual(payload['deploy_rejections'][0]['symbol'], 'ETH/USDT:USDT')
+            self.assertEqual(payload['deploy_rejections'][0]['stage'], 'risk')
+            self.assertTrue(payload['deploy_rejections'][0]['cooldown_active'])
+            self.assertEqual(payload['deploy_diagnostics']['active_rejections'], 1)
+            self.assertEqual(payload['deploy_diagnostics']['free_slots'], 3)
         finally:
             grid_api._state = original_state
 

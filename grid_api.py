@@ -143,6 +143,18 @@ DEFAULT_STATE: dict = {
     "slots": {},              # slot_id -> slot data
     "completed_trades": [],   # last 50 closed trades
     "scanner_candidates": [], # top 10 scanner picks
+    "deploy_rejections": [],  # active/recent deploy rejection reasons + cooldowns
+    "deploy_diagnostics": {
+        "free_slots": 0,
+        "raw_candidates": 0,
+        "post_capacity_candidates": 0,
+        "post_prefilter_candidates": 0,
+        "picked_candidates": 0,
+        "active_rejections": 0,
+        "recent_rejections": [],
+        "rejection_cooldown_seconds": 0,
+        "min_rejection_cooldown_seconds": 0,
+    },
     "events": [],             # recent backend events for the dashboard log panel
     "heartbeat": {
         "active": 0,
@@ -400,6 +412,13 @@ def _coerce_state(raw: dict | None) -> dict:
 
     scanner_candidates = raw.get("scanner_candidates")
     normalized["scanner_candidates"] = scanner_candidates if isinstance(scanner_candidates, list) else []
+
+    deploy_rejections = raw.get("deploy_rejections")
+    normalized["deploy_rejections"] = deploy_rejections if isinstance(deploy_rejections, list) else []
+
+    deploy_diagnostics = raw.get("deploy_diagnostics")
+    if isinstance(deploy_diagnostics, dict):
+        normalized["deploy_diagnostics"].update(deploy_diagnostics)
 
     events = raw.get("events")
     normalized["events"] = events if isinstance(events, list) else []
@@ -691,6 +710,16 @@ async def get_stats(authorization: Optional[str] = Header(None), x_tenant_id: Op
 async def get_scanner(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
     _viewer_session(authorization, x_tenant_id)
     return _state["scanner_candidates"]
+
+
+@app.get("/api/deploy/rejections")
+async def get_deploy_rejections(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
+    _load_state_file()
+    return {
+        "deploy_rejections": _state.get("deploy_rejections", []),
+        "deploy_diagnostics": _state.get("deploy_diagnostics", {}),
+    }
 
 
 @app.get("/api/heartbeat")

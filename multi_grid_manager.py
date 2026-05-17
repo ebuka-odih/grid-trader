@@ -829,9 +829,22 @@ class MultiGridManager:
         self._started_at: Optional[float] = None
         self._deployment_paused_until = 0.0
 
-        # Track recently-rejected symbols to avoid re-picking them every cycle
-        self._recently_rejected: dict[str, float] = {}  # symbol -> rejection timestamp
-        self._rejection_cooldown = int(os.getenv("REJECTION_COOLDOWN_SECONDS", "180"))
+        # Track recently-rejected symbols to avoid re-picking them every cycle.
+        # Keep structured metadata so the API/dashboard can show exact reasons,
+        # cooldown remaining, and which gate rejected the deploy.
+        self._recently_rejected: dict[str, dict[str, Any]] = {}
+        self._deploy_rejection_history: deque[dict[str, Any]] = deque(maxlen=50)
+        self._rejection_cooldown = int(os.getenv("REJECTION_COOLDOWN_SECONDS", "90"))
+        self._min_rejection_cooldown = int(os.getenv("MIN_REJECTION_COOLDOWN_SECONDS", "20"))
+        self._last_deploy_scan_summary: dict[str, Any] = {
+            "free_slots": 0,
+            "raw_candidates": 0,
+            "post_capacity_candidates": 0,
+            "post_prefilter_candidates": 0,
+            "picked_candidates": 0,
+            "rejection_cooldown_seconds": self._rejection_cooldown,
+            "min_rejection_cooldown_seconds": self._min_rejection_cooldown,
+        }
 
         # Cross-symbol drawdown-cluster gate: timestamps of recent close events
         # whose reason indicates a price-driven exit (drawdown / spike_close).
@@ -901,6 +914,102 @@ class MultiGridManager:
                     f"{DRAWDOWN_CLUSTER_WINDOW_SEC:.0f}s — pausing deploys for "
                     f"{DRAWDOWN_CLUSTER_PAUSE_SEC:.0f}s"
                 )
+
+    def _effective_rejection_cooldown(
+        self,
+        *,
+        free_slots: int = 0,
+        stage: str = "generic",
+        reasons: list[str] | None = None,
+    ) -> int:
+        """Adaptive cooldown that refills empty slots faster than the old fixed delay."""
+        cooldown = max(self._min_rejection_cooldown, int(self._rejection_cooldown))
+        reasons_text = " | ".join(reasons or []).lower()
+
+        if stage in {"supervisor", "risk"}:
+            cooldown = min(cooldown, 60)
+        if any(token in reasons_text for token in (
+            "below minimum",
+            "outside grid range",
+            "entry quality",
+            "grid width",
+            "confidence",
+        )):
+            cooldown = min(cooldown, 45)
+        if "blacklist" in reasons_text:
+            cooldown = max(cooldown, 120)
+
+        if free_slots >= max(3, self.max_grids // 4):
+            cooldown = max(self._min_rejection_cooldown, int(round(cooldown * 0.35)))
+        elif free_slots >= 2:
+            cooldown = max(self._min_rejection_cooldown, int(round(cooldown * 0.6)))
+
+        return max(self._min_rejection_cooldown, int(cooldown))
+
+    def _prune_recent_rejections(self, now_ts: float | None = None) -> None:
+        now_ts = now_ts or time.time()
+        pruned: dict[str, dict[str, Any]] = {}
+        for sym, payload in (self._recently_rejected or {}).items():
+            if isinstance(payload, (int, float)):
+                payload = {
+                    "symbol": sym,
+                    "stage": "legacy",
+                    "reasons": [],
+                    "rejected_at": float(payload),
+                    "cooldown_seconds": int(self._rejection_cooldown),
+                    "cooldown_until": float(payload) + int(self._rejection_cooldown),
+                }
+            elif not isinstance(payload, dict):
+                continue
+            cooldown_until = float(payload.get("cooldown_until") or 0.0)
+            if cooldown_until > now_ts:
+                pruned[sym] = payload
+        self._recently_rejected = pruned
+
+    def _serialize_recent_rejections(self, limit: int = 20, *, include_expired: bool = False) -> list[dict[str, Any]]:
+        now_ts = time.time()
+        items = list(self._deploy_rejection_history)
+        serialized: list[dict[str, Any]] = []
+        for payload in reversed(items):
+            cooldown_until = float(payload.get("cooldown_until") or 0.0)
+            cooldown_remaining = max(0, int(round(cooldown_until - now_ts)))
+            if not include_expired and cooldown_remaining <= 0:
+                continue
+            serialized.append({
+                **payload,
+                "cooldown_remaining_seconds": cooldown_remaining,
+                "cooldown_active": cooldown_remaining > 0,
+            })
+            if len(serialized) >= limit:
+                break
+        return serialized
+
+    def _record_deploy_rejection(
+        self,
+        *,
+        symbol: str,
+        stage: str,
+        reasons: list[str] | None,
+        free_slots: int,
+        cooldown_seconds: int | None = None,
+    ) -> None:
+        now_ts = time.time()
+        normalized_reasons = [str(reason) for reason in (reasons or []) if str(reason).strip()]
+        cooldown = int(cooldown_seconds or self._effective_rejection_cooldown(
+            free_slots=free_slots,
+            stage=stage,
+            reasons=normalized_reasons,
+        ))
+        payload = {
+            "symbol": symbol,
+            "stage": stage,
+            "reasons": normalized_reasons,
+            "rejected_at": now_ts,
+            "cooldown_seconds": cooldown,
+            "cooldown_until": now_ts + cooldown,
+        }
+        self._recently_rejected[symbol] = payload
+        self._deploy_rejection_history.append(payload)
 
     def _session_start_file(self) -> str:
         """Path of the persisted session-start marker."""
@@ -1525,46 +1634,69 @@ class MultiGridManager:
         active_symbols = [slot.symbol for slot in self.slots.values()]
 
         now_ts = time.time()
+        self._prune_recent_rejections(now_ts)
 
-        # Expire old rejection entries
-        self._recently_rejected = {
-            sym: ts for sym, ts in self._recently_rejected.items()
-            if now_ts - ts < self._rejection_cooldown
+        wallet_balance = self.wallet_tracker.get_balance()
+        raw_candidate_count = len(scores)
+        capacity_passed: list[CoinScore] = []
+
+        for coin in scores:
+            rejection_reasons: list[str] = []
+            if not symbol_has_grid_capacity(active_symbols, coin.symbol):
+                rejection_reasons.append("per-symbol capacity reached")
+            if self.risk_monitor.is_blacklisted(coin.symbol):
+                rejection_reasons.append("symbol blacklisted by risk monitor")
+            active_rejection = self._recently_rejected.get(coin.symbol)
+            if active_rejection:
+                remaining = max(0, int(round(float(active_rejection.get("cooldown_until") or 0.0) - now_ts)))
+                if remaining > 0:
+                    stage = active_rejection.get("stage") or "deploy"
+                    prior_reasons = active_rejection.get("reasons") or []
+                    detail = f"recent rejection cooldown active ({remaining}s left; stage={stage})"
+                    if prior_reasons:
+                        detail += f": {'; '.join(prior_reasons)}"
+                    rejection_reasons.append(detail)
+            if rejection_reasons:
+                self._deploy_rejection_history.append({
+                    "symbol": coin.symbol,
+                    "stage": "prefilter",
+                    "reasons": rejection_reasons,
+                    "rejected_at": now_ts,
+                    "cooldown_seconds": 0,
+                    "cooldown_until": now_ts,
+                })
+                continue
+            capacity_passed.append(coin)
+
+        self._last_deploy_scan_summary = {
+            "free_slots": free_slots,
+            "raw_candidates": raw_candidate_count,
+            "post_capacity_candidates": len(capacity_passed),
+            "post_prefilter_candidates": 0,
+            "picked_candidates": 0,
+            "rejection_cooldown_seconds": self._rejection_cooldown,
+            "min_rejection_cooldown_seconds": self._min_rejection_cooldown,
         }
 
-        available = [
+        if not capacity_passed:
 
-            s for s in scores
-
-            if symbol_has_grid_capacity(active_symbols, s.symbol)
-
-            and not self.risk_monitor.is_blacklisted(s.symbol)
-
-            and s.symbol not in self._recently_rejected
-
-        ]
-
-
-
-        if not available:
-
-            logger.info("📊 All candidate symbols are at per-symbol capacity or blacklisted")
+            logger.info("📊 All candidate symbols are at per-symbol capacity, blacklisted, or on rejection cooldown")
 
             return
 
-        wallet_balance = self.wallet_tracker.get_balance()
         token_profile_by_symbol = {
             coin.symbol: self.risk_monitor.get_token_profile(coin.symbol)
-            for coin in available[:SCANNER_TOP_N]
+            for coin in capacity_passed[:SCANNER_TOP_N]
         }
         available = prefilter_scanner_candidates_for_deploy(
-            available,
+            capacity_passed,
             token_profile_by_symbol=token_profile_by_symbol,
             wallet_balance=wallet_balance,
             decision_supervisor=self.decision_supervisor,
             active_symbols=active_symbols,
             max_active_per_symbol=MAX_GRIDS_PER_SYMBOL,
         )
+        self._last_deploy_scan_summary["post_prefilter_candidates"] = len(available)
 
         if not available:
 
@@ -1577,6 +1709,7 @@ class MultiGridManager:
         num_to_pick = min(free_slots, len(available), MAX_DEPLOYMENTS_PER_CYCLE)
 
         picks = self._select_coins_algorithmically(available[:SCANNER_TOP_N], num_to_pick, wallet_balance)
+        self._last_deploy_scan_summary["picked_candidates"] = len(picks)
 
         if not picks:
 
@@ -1625,6 +1758,12 @@ class MultiGridManager:
 
             if not symbol_has_grid_capacity(active_symbols, decision.symbol):
 
+                self._record_deploy_rejection(
+                    symbol=decision.symbol,
+                    stage="capacity",
+                    reasons=["per-symbol capacity reached before deploy"],
+                    free_slots=max(0, self.max_grids - len(self.slots)),
+                )
                 continue
 
 
@@ -1663,7 +1802,12 @@ class MultiGridManager:
 
                 )
 
-                self._recently_rejected[decision.symbol] = time.time()
+                self._record_deploy_rejection(
+                    symbol=decision.symbol,
+                    stage="supervisor",
+                    reasons=list(review.reasons),
+                    free_slots=max(0, self.max_grids - len(self.slots)),
+                )
 
                 continue
 
@@ -1698,7 +1842,12 @@ class MultiGridManager:
 
                 logger.warning(f"🛡️ {decision.symbol} REJECTED by risk monitor: {risk_result['reasons']}")
 
-                self._recently_rejected[decision.symbol] = time.time()
+                self._record_deploy_rejection(
+                    symbol=decision.symbol,
+                    stage="risk",
+                    reasons=list(risk_result.get("reasons") or []),
+                    free_slots=max(0, self.max_grids - len(self.slots)),
+                )
 
                 continue
 
@@ -1765,7 +1914,12 @@ class MultiGridManager:
                 active_symbols.append(decision.symbol)
             except Exception as exc:
                 logger.warning(f"🛡️ {decision.symbol} DEPLOY FAILED: {exc}")
-                self._recently_rejected[decision.symbol] = time.time()
+                self._record_deploy_rejection(
+                    symbol=decision.symbol,
+                    stage="deploy",
+                    reasons=[str(exc)],
+                    free_slots=max(0, self.max_grids - len(self.slots)),
+                )
                 continue
 
 
@@ -3459,6 +3613,12 @@ def _push_api_state(manager):
             "slots": _serialize_slots(manager.slots),
             "completed_trades": db_trades or manager._completed_trades[-50:],
             "scanner_candidates": getattr(manager, "_scanner_candidates", [])[:10],
+            "deploy_rejections": manager._serialize_recent_rejections(limit=20),
+            "deploy_diagnostics": {
+                **getattr(manager, "_last_deploy_scan_summary", {}),
+                "active_rejections": len(getattr(manager, "_recently_rejected", {})),
+                "recent_rejections": manager._serialize_recent_rejections(limit=10, include_expired=True),
+            },
             "heartbeat": heartbeat_state,
             "stats": {
                 **closed_stats,
