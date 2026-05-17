@@ -49,6 +49,10 @@ class GridState:
     lower_price: float
     num_grids: int
     leverage: int
+    spacing_mode: str = "balanced"
+    entry_shape_template: str = "atr_box"
+    buy_density_bias: float = 0.5
+    sell_density_bias: float = 0.5
     grid_levels: list[GridLevel] = field(default_factory=list)
     order_size_usdt: float = BASE_ORDER_SIZE_USDT  # margin allocated per grid level
     total_pnl: float = 0.0
@@ -115,6 +119,20 @@ class GridEngine:
         factor = 10 ** precision
         return round(value * factor) / factor
 
+    def _biased_fraction(self, position: int, total: int, bias: float) -> float:
+        """Map a 1..N position into 0..1 with density bias.
+
+        Higher bias (>0.5) compresses levels closer to current price.
+        Lower bias (<0.5) spreads levels farther toward the range edge.
+        """
+        if total <= 1:
+            return 1.0
+        x = position / total
+        b = max(0.05, min(0.95, float(bias)))
+        exponent = 2.2 - (b * 2.4)
+        exponent = max(0.25, min(2.75, exponent))
+        return max(0.0, min(1.0, x ** exponent))
+
     # ── Grid Calculation ───────────────────────────────────
 
     def calculate_grid_levels(
@@ -127,6 +145,10 @@ class GridEngine:
         leverage: int = DEFAULT_LEVERAGE,
         order_size_usdt: float = BASE_ORDER_SIZE_USDT,
         exp_sizing_gamma: float = 0.0,
+        spacing_mode: str = "balanced",
+        buy_density_bias: float = 0.5,
+        sell_density_bias: float = 0.5,
+        entry_shape_template: str = "atr_box",
     ) -> GridState:
         """Calculate evenly-spaced grid levels with symbol-aware precision.
         
@@ -149,20 +171,63 @@ class GridEngine:
         # Ensure minimum qty
         qty_per_level = max(qty_per_level, min_qty)
 
-        step = (upper - lower) / num_grids
         levels = []
-        
+
         # v3: Pre-compute exponential sizing factors
         import math
         total_range = upper - lower
+        spacing_mode = str(spacing_mode or "balanced")
+        buy_density_bias = max(0.0, min(1.0, float(buy_density_bias)))
+        sell_density_bias = max(0.0, min(1.0, float(sell_density_bias)))
+        nominal_step = total_range / max(num_grids, 1)
+        min_gap = max(nominal_step * 0.2, 10 ** (-price_precision))
 
-        for i in range(num_grids + 1):
-            price = self._round_to_precision(lower + step * i, price_precision)
-            if abs(price - current_price) < step * 0.3:
-                continue  # skip level too close to current price
+        lower_span = max(current_price - lower, 0.0)
+        upper_span = max(upper - current_price, 0.0)
+        total_levels = max(2, int(num_grids))
 
-            side = "Buy" if price < current_price else "Sell"
-            
+        if total_range <= 0:
+            raise ValueError(f"Invalid grid range for {symbol}: lower={lower} upper={upper}")
+
+        buy_levels_target = max(1, min(total_levels - 1, round(total_levels * lower_span / total_range)))
+        sell_levels_target = max(1, total_levels - buy_levels_target)
+
+        if spacing_mode == "buy_weighted":
+            buy_share = max(buy_density_bias, 0.52)
+            buy_levels_target = max(1, min(total_levels - 1, int(round(total_levels * buy_share))))
+            sell_levels_target = max(1, total_levels - buy_levels_target)
+        elif spacing_mode == "sell_weighted":
+            sell_share = max(sell_density_bias, 0.52)
+            sell_levels_target = max(1, min(total_levels - 1, int(round(total_levels * sell_share))))
+            buy_levels_target = max(1, total_levels - sell_levels_target)
+
+        ordered_prices: list[tuple[float, str]] = []
+
+        if lower_span > 0:
+            side_bias = buy_density_bias if spacing_mode != "sell_weighted" else 0.45
+            for pos in range(1, buy_levels_target + 1):
+                frac = self._biased_fraction(pos, buy_levels_target, side_bias)
+                price = self._round_to_precision(current_price - (lower_span * frac), price_precision)
+                ordered_prices.append((price, "Buy"))
+
+        if upper_span > 0:
+            side_bias = sell_density_bias if spacing_mode != "buy_weighted" else 0.45
+            for pos in range(1, sell_levels_target + 1):
+                frac = self._biased_fraction(pos, sell_levels_target, side_bias)
+                price = self._round_to_precision(current_price + (upper_span * frac), price_precision)
+                ordered_prices.append((price, "Sell"))
+
+        ordered_prices.sort(key=lambda item: item[0])
+
+        filtered_prices: list[tuple[float, str]] = []
+        for price, side in ordered_prices:
+            if abs(price - current_price) < min_gap:
+                continue
+            if filtered_prices and abs(price - filtered_prices[-1][0]) < (min_gap * 0.5):
+                continue
+            filtered_prices.append((price, side))
+
+        for i, (price, side) in enumerate(filtered_prices):
             # v3: Exponential level sizing
             if exp_sizing_gamma > 0:
                 dist = abs(price - current_price) / max(total_range, 1e-8)
@@ -173,7 +238,7 @@ class GridEngine:
                 level_qty = max(level_qty, min_qty)
             else:
                 level_qty = qty_per_level
-            
+
             levels.append(GridLevel(
                 index=i,
                 price=price,
@@ -187,6 +252,10 @@ class GridEngine:
             lower_price=lower,
             num_grids=num_grids,
             leverage=leverage,
+            spacing_mode=spacing_mode,
+            entry_shape_template=entry_shape_template,
+            buy_density_bias=buy_density_bias,
+            sell_density_bias=sell_density_bias,
             grid_levels=levels,
             order_size_usdt=order_size_usdt,
             grid_id=(
@@ -225,7 +294,18 @@ class GridEngine:
         price = coin_score.price
 
         # Calculate grid
-        grid = self.calculate_grid_levels(symbol, upper, lower, num_grids, price, leverage)
+        grid = self.calculate_grid_levels(
+            symbol,
+            upper,
+            lower,
+            num_grids,
+            price,
+            leverage,
+            spacing_mode=getattr(coin_score, "entry_shape_spacing", "balanced"),
+            buy_density_bias=getattr(coin_score, "entry_buy_density_bias", 0.5),
+            sell_density_bias=getattr(coin_score, "entry_sell_density_bias", 0.5),
+            entry_shape_template=getattr(coin_score, "entry_shape_template", "atr_box"),
+        )
 
         # Safety: in dry-run mode, never touch private exchange endpoints.
         # Use mainnet/testnet public market data elsewhere, but simulate order placement here.

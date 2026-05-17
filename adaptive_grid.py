@@ -210,6 +210,14 @@ class SideExposure:
         else:
             self.consecutive_same_side = 1
         self.last_fill_side = side
+
+    def reset(self):
+        self.buy_fills = 0
+        self.sell_fills = 0
+        self.buy_qty = 0.0
+        self.sell_qty = 0.0
+        self.last_fill_side = ""
+        self.consecutive_same_side = 0
     
     @property
     def imbalance_ratio(self) -> float:
@@ -246,6 +254,9 @@ class ExposureCap:
     def fills_allowed(self) -> bool:
         """Are new fills allowed?"""
         return not self.is_breached()
+
+    def reset(self):
+        self.exposure.reset()
 
 
 # ── Adaptive Grid Controller ──────────────────────────────────

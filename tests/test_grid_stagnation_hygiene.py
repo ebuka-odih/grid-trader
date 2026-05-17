@@ -21,14 +21,14 @@ class GridStagnationHygieneTests(unittest.TestCase):
         )
         self.assertEqual(reason, "no_fills_timeout")
 
-    def test_closes_losing_grid_with_no_progress(self):
+    def test_holds_losing_grid_with_no_progress(self):
         reason = self.manager._stagnation_close_reason(
             age_seconds=600,
             fills=4,
             total_pnl=-0.25,
             seconds_since_progress=LOSING_STAGNANT_TIMEOUT_SECONDS + 1,
         )
-        self.assertEqual(reason, "losing_stagnant")
+        self.assertIsNone(reason)
 
     def test_closes_any_grid_with_extended_no_progress(self):
         reason = self.manager._stagnation_close_reason(

@@ -8,8 +8,9 @@ which would have left positions open on the exchange in production.
 import asyncio
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from adaptive_grid import AdaptiveConfig
 from grid_core import GridPosition, GridImbalance, SmartCloseConfig
 from grid_engine import GridState, GridLevel
 from live_engine import LiveEngine, LiveState
@@ -131,6 +132,51 @@ class LiveScaleOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(qty, 2.0)
         self.assertAlmostEqual(eng.state.position.qty, 2.0)
         self.assertTrue(eng.state.position.scaled_out)
+
+
+    async def test_scale_out_failure_holds_for_recovery_instead_of_force_closing(self):
+        eng = _make_engine(scale_out_fraction=0.5, hard_floor=20.0)
+        _seed_state(eng, qty=4.0, price=100.0)
+        eng._grid_engine.close_position = AsyncMock(return_value=None)
+        eng._alerter = MagicMock()
+        eng._alerter.send = AsyncMock()
+
+        event = await eng.on_price_update(99.5)
+
+        self.assertIsNone(event)
+        self.assertTrue(eng.state.is_active)
+        self.assertFalse(eng._grid_engine.cancel_grid.await_count)
+        eng._alerter.send.assert_awaited()
+
+
+class LiveAdaptiveConfigTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deploy_grid_uses_manager_supplied_adaptive_config(self):
+        cfg = AdaptiveConfig(max_same_side_fills=7, spike_window_sec=22.0)
+        eng = LiveEngine(adaptive_config=cfg)
+
+        grid = GridState(
+            symbol="TEST/USDT:USDT",
+            upper_price=110.0, lower_price=90.0,
+            num_grids=10, leverage=10, order_size_usdt=1.0,
+            grid_levels=[],
+        )
+        mocked_grid_engine = MagicMock()
+        mocked_grid_engine.deploy_grid = AsyncMock(return_value=grid)
+
+        class DummyCoinScore:
+            symbol = "TEST/USDT:USDT"
+            price = 100.0
+            suggested_upper = 110.0
+            suggested_lower = 90.0
+            suggested_grids = 10
+            suggested_leverage = 10
+            atr_pct = 0.8
+
+        with patch("live_engine.GridEngine", return_value=mocked_grid_engine):
+            await eng.deploy_grid(DummyCoinScore())
+        self.assertIs(eng._adaptive.config, cfg)
+        self.assertEqual(eng._adaptive.config.max_same_side_fills, 7)
+        self.assertEqual(eng._adaptive.config.spike_window_sec, 22.0)
 
 
 if __name__ == "__main__":

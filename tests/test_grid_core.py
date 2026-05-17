@@ -104,8 +104,10 @@ class TestGridImbalance(unittest.TestCase):
 class TestSmartClose(unittest.TestCase):
     def test_time_decay_triggers(self):
         config = SmartCloseConfig(
+            time_decay_enabled=True,
             time_decay_hours=1.0, time_decay_min_loss_pct=0.5,
             recovery_window_sec=0.0,  # disable deferral so trigger fires directly
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(side="Buy", qty=0.1, entry_price=100.0, opened_at=time.time() - 7200)
@@ -122,22 +124,26 @@ class TestSmartClose(unittest.TestCase):
 
     def test_imbalance_close(self):
         config = SmartCloseConfig(
+            imbalance_close_enabled=True,
             imbalance_ratio_threshold=3.0, imbalance_min_fills=4,
             recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(side="Buy", qty=0.1, entry_price=100.0, opened_at=time.time() - 3600)
         imb = GridImbalance(buy_fills=8, sell_fills=1, last_side="Buy", consecutive_same_side=7)
         reason = engine.check_smart_close(pos, 98.5, 10.0, imb, 10)
-        self.assertEqual(reason, CloseReason.GRID_IMBALANCE)
+        self.assertIsNone(reason)
 
     def test_post_fill_cooldown_defers_close(self):
         # A fresh fill should defer all smart-close triggers until cooldown elapses.
         config = SmartCloseConfig(
+            time_decay_enabled=True,
             time_decay_hours=1.0, time_decay_min_loss_pct=0.5,
             min_seconds_since_last_fill=180.0,
             recovery_window_sec=0.0,
             hard_loss_pct_floor=20.0,  # high enough not to trip
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(
@@ -156,11 +162,13 @@ class TestSmartClose(unittest.TestCase):
 
     def test_recovery_window_aborts_close_on_partial_recovery(self):
         config = SmartCloseConfig(
+            time_decay_enabled=True,
             time_decay_hours=1.0, time_decay_min_loss_pct=0.5,
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=300.0,
             recovery_partial_pct=30.0,
             hard_loss_pct_floor=20.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(
@@ -176,11 +184,13 @@ class TestSmartClose(unittest.TestCase):
 
     def test_recovery_window_expires_then_closes(self):
         config = SmartCloseConfig(
+            time_decay_enabled=True,
             time_decay_hours=1.0, time_decay_min_loss_pct=0.5,
             min_seconds_since_last_fill=0.0,
             recovery_window_sec=10.0,
             recovery_partial_pct=30.0,
             hard_loss_pct_floor=20.0,
+            min_position_age_sec=0.0,
         )
         engine = SmartCloseEngine(config)
         pos = GridPosition(
@@ -278,15 +288,69 @@ class TestSmartClose(unittest.TestCase):
         )
         engine = SmartCloseEngine(config)
         # qty=2.5, entry=100, current=98 → unrealized = -5.0 = 50% margin loss
-        # which exceeds the 4% hard floor → immediate close, no deferral.
+        # which exceeds the 4% hard floor. Current policy opens a recovery
+        # window first, then closes if that window expires without a bounce.
         pos = GridPosition(
             side="Buy", qty=2.5, entry_price=100.0,
             opened_at=time.time() - 60,
             last_fill_at=time.time() - 1,
         )
+        self.assertIsNone(
+            engine.check_smart_close(pos, 98.0, 10.0, GridImbalance(), 1),
+        )
+        engine._recovery_state["Buy"]["start_ts"] = time.time() - 1000
         self.assertEqual(
             engine.check_smart_close(pos, 98.0, 10.0, GridImbalance(), 1),
             CloseReason.DRAWDOWN,
+        )
+
+    def test_imbalance_cannot_close_before_hard_floor(self):
+        config = SmartCloseConfig(
+            imbalance_close_enabled=True,
+            imbalance_emergency_ratio=4.0,
+            imbalance_emergency_min_fills=4,
+            imbalance_emergency_min_loss_pct=8.0,
+            imbalance_emergency_min_age_sec=0.0,
+            hard_loss_pct_floor=15.0,
+            scale_out_fraction=0.5,
+            min_seconds_since_last_fill=0.0,
+            recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
+        )
+        engine = SmartCloseEngine(config)
+        pos = GridPosition(
+            side="Buy", qty=2.0, entry_price=100.0,
+            opened_at=time.time() - 300, last_fill_at=time.time() - 1000,
+        )
+        imb = GridImbalance(buy_fills=8, sell_fills=1)
+        # 10% margin loss: above imbalance min-loss, below 15% hard floor.
+        self.assertIsNone(
+            engine.check_smart_close(pos, 99.5, 10.0, imb, 9, drawdown_breached=False)
+        )
+
+    def test_imbalance_at_floor_defers_to_hard_floor_path(self):
+        config = SmartCloseConfig(
+            imbalance_close_enabled=True,
+            imbalance_emergency_ratio=4.0,
+            imbalance_emergency_min_fills=4,
+            imbalance_emergency_min_loss_pct=8.0,
+            imbalance_emergency_min_age_sec=0.0,
+            hard_loss_pct_floor=15.0,
+            scale_out_fraction=0.5,
+            min_seconds_since_last_fill=0.0,
+            recovery_window_sec=0.0,
+            min_position_age_sec=0.0,
+        )
+        engine = SmartCloseEngine(config)
+        pos = GridPosition(
+            side="Buy", qty=2.0, entry_price=100.0,
+            opened_at=time.time() - 300, last_fill_at=time.time() - 1000,
+        )
+        imb = GridImbalance(buy_fills=8, sell_fills=1)
+        # 20% margin loss: hits the 15% hard floor, so the floor path owns the exit.
+        self.assertEqual(
+            engine.check_smart_close(pos, 99.0, 10.0, imb, 9, drawdown_breached=True),
+            CloseReason.PARTIAL_CLOSE,
         )
 
     def test_no_close_when_flat(self):
@@ -494,8 +558,8 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
         return SmartCloseEngine(cfg)
 
     def test_emergency_bypass_fires_on_severe_imbalance(self):
-        # 6 Buy fills, 1 Sell = 6:1 ratio (>=5). 8% loss (>=5). Cooldown active.
-        # Position is on the dominant (Buy) side. Should fire even within cooldown.
+        # Severe same-side skew under the hard floor is now a hold signal.
+        # Cooldown/freeze should manage the position; skew alone cannot realize a loss.
         engine = self._engine()
         pos = GridPosition(
             side="Buy", qty=4.0, entry_price=100.0,
@@ -506,7 +570,7 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
         )
         # qty=4, current=99.8 → unr = 4 * -0.2 = -0.8 = 8% margin loss
         result = engine.check_smart_close(pos, 99.8, 10.0, imb, total_fills=7)
-        self.assertEqual(result, CloseReason.GRID_IMBALANCE)
+        self.assertIsNone(result)
 
     def test_emergency_bypass_does_not_fire_below_loss_threshold(self):
         # Same imbalance but only 3% loss — below emergency threshold → defer to cooldown.
@@ -533,10 +597,8 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_emergency_bypass_fires_on_fresh_position(self):
-        # The bypass MUST fire even on a position younger than
-        # min_position_age_sec — that's its whole purpose. Catastrophic
-        # fast-trending grids fill in seconds and would otherwise be
-        # blocked by the min-age guard until the floor catches them at -15%.
+        # Fresh positions stay protected by min_position_age_sec even with severe skew.
+        # The emergency path no longer force-closes before the floor.
         cfg = SmartCloseConfig(
             min_seconds_since_last_fill=180.0,
             recovery_window_sec=0.0,
@@ -555,16 +617,12 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
             opened_at=time.time() - 30, last_fill_at=time.time() - 1,
         )
         imb = GridImbalance(buy_fills=6, sell_fills=1, last_side="Buy", consecutive_same_side=5)
-        # 5% loss → above 3% emergency threshold
+        # 5% loss → above emergency threshold, but still held because min-age guard remains.
         result = engine.check_smart_close(pos, 99.875, 10.0, imb, total_fills=7)
-        self.assertEqual(result, CloseReason.GRID_IMBALANCE,
-            "Emergency bypass MUST fire even on fresh positions to catch fast-trending grids")
+        self.assertIsNone(result)
 
     def test_emergency_bypass_fires_before_floor(self):
-        # When loss is already past the floor (e.g. 16% > 15%), the bypass
-        # should still take precedence over the floor for severe imbalance —
-        # closing as GRID_IMBALANCE (not DRAWDOWN) since the imbalance is
-        # the actual problem.
+        # Once loss is past the floor, the hard-floor scale-out path owns the exit.
         cfg = SmartCloseConfig(
             min_seconds_since_last_fill=180.0,
             recovery_window_sec=0.0,
@@ -582,9 +640,9 @@ class TestImbalanceEmergencyBypass(unittest.TestCase):
             opened_at=time.time() - 200, last_fill_at=time.time() - 1,
         )
         imb = GridImbalance(buy_fills=6, sell_fills=0, last_side="Buy", consecutive_same_side=6)
-        # 16% loss — past floor. Bypass should fire as GRID_IMBALANCE.
+        # 16% loss — past floor. The floor path should scale out the position.
         result = engine.check_smart_close(pos, 99.6, 10.0, imb, total_fills=6)
-        self.assertEqual(result, CloseReason.GRID_IMBALANCE)
+        self.assertEqual(result, CloseReason.PARTIAL_CLOSE)
 
     def test_emergency_bypass_does_not_fire_below_min_fills(self):
         # Severe ratio but only 4 total fills — under min — defer.
@@ -654,11 +712,14 @@ class TestDynamicTakeProfit(unittest.TestCase):
         result = engine.evaluate_take_profit(pos, 102.0, 10.0, total_pnl=0.20, total_fills=4)
         self.assertEqual(result, CloseReason.TARGET_HIT)
 
-    def test_time_decay_holds_when_below_decayed_target(self):
+    def test_step_curve_closes_any_profit_past_30min(self):
         engine = self._engine()
         pos = self._pos(age_min=37)
-        # 1% PnL is below the 1.53% decayed target.
-        self.assertIsNone(engine.evaluate_take_profit(pos, 101.0, 10.0, total_pnl=0.10, total_fills=4))
+        # With the default step curve enabled, the target is break-even past 30 min.
+        self.assertEqual(
+            engine.evaluate_take_profit(pos, 101.0, 10.0, total_pnl=0.10, total_fills=4),
+            CloseReason.TARGET_HIT,
+        )
 
     def test_dust_floor_holds_at_60min(self):
         engine = self._engine()

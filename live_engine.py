@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any
 from grid_engine import GridEngine, GridState, GridLevel
 from coin_scanner import CoinScore
 from config import (
-    DRY_RUN, BASE_ORDER_SIZE_USDT, TARGET_PNL_PCT_LOW,
+    DRY_RUN, BASE_ORDER_SIZE_USDT, TARGET_PNL_PCT_LOW, TARGET_PNL_PCT_HIGH,
     MAX_DRAWDOWN_PCT,
 )
 from adaptive_grid import AdaptiveGrid, AdaptiveConfig, AdaptiveResult, default_config
@@ -41,15 +41,25 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
             return default
 
     cfg = SmartCloseConfig(
+        time_decay_enabled=str(os.getenv("SMART_CLOSE_TIME_DECAY_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         time_decay_hours=_f("SMART_CLOSE_TIME_DECAY_HOURS", 4.0),
         time_decay_min_loss_pct=_f("SMART_CLOSE_TIME_DECAY_MIN_LOSS_PCT", 1.0),
+        momentum_exit_enabled=str(os.getenv("SMART_CLOSE_MOMENTUM_EXIT_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         momentum_threshold_pct=_f("SMART_CLOSE_MOMENTUM_THRESHOLD_PCT", 2.5),
         momentum_window_sec=_f("SMART_CLOSE_MOMENTUM_WINDOW_SEC", 60.0),
+        imbalance_close_enabled=str(os.getenv("SMART_CLOSE_IMBALANCE_CLOSE_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         imbalance_ratio_threshold=_f("SMART_CLOSE_IMBALANCE_RATIO", 3.5),
         imbalance_min_fills=int(_f("SMART_CLOSE_IMBALANCE_MIN_FILLS", 8)),
+        trailing_stop_enabled=str(os.getenv("SMART_CLOSE_TRAILING_STOP_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         trailing_stop_initial_pct=_f("SMART_CLOSE_TRAILING_INITIAL_PCT", 3.5),
         trailing_stop_tightened_pct=_f("SMART_CLOSE_TRAILING_TIGHTENED_PCT", 2.5),
         trailing_stop_tighten_hours=_f("SMART_CLOSE_TRAILING_TIGHTEN_HOURS", 4.0),
+        recovery_check_enabled=str(os.getenv("SMART_CLOSE_RECOVERY_CHECK_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         recovery_min_depth_pct=_f("SMART_CLOSE_RECOVERY_MIN_DEPTH_PCT", 1.5),
         recovery_max_hours=_f("SMART_CLOSE_RECOVERY_MAX_HOURS", 6.0),
         min_seconds_since_last_fill=_f("SMART_CLOSE_POST_FILL_COOLDOWN_SEC", 180.0),
@@ -59,6 +69,8 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 12.0),
         hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 22.0),
         scale_out_fraction=_f("SCALE_OUT_FRACTION", 0.5),
+        # Patch J: post-scale-out cooldown (env-tunable).
+        post_scale_out_cooldown_sec=_f("POST_SCALE_OUT_COOLDOWN_SEC", 60.0),
         min_position_age_sec=_f("SMART_CLOSE_MIN_POS_AGE_SEC", 90.0),
         imbalance_emergency_ratio=_f("IMBALANCE_EMERGENCY_RATIO", 4.0),
         imbalance_emergency_min_fills=int(_f("IMBALANCE_EMERGENCY_MIN_FILLS", 4)),
@@ -73,7 +85,15 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         tp_momentum_velocity_pct_per_min=_f("DYNAMIC_TP_MOMENTUM_VELOCITY_PCT_PER_MIN", 1.5),
         tp_momentum_extend_max_pct=_f("DYNAMIC_TP_MOMENTUM_EXTEND_MAX_PCT", 5.0),
         tp_momentum_trailing_giveback_pct=_f("DYNAMIC_TP_TRAILING_GIVEBACK_PCT", 0.5),
-        tp_min_fills=int(_f("DYNAMIC_TP_MIN_FILLS", 2)),
+        tp_min_fills=int(_f("DYNAMIC_TP_MIN_FILLS", 1)),
+        # Patch D: env hooks for piecewise TP step curve (3/2/1/0 default).
+        tp_step_curve_enabled=str(os.getenv("DYNAMIC_TP_STEP_CURVE", "true")).lower()
+        in ("1", "true", "yes", "on"),
+        tp_tier_1_min=_f("DYNAMIC_TP_TIER_1_MIN", 10.0),
+        tp_tier_2_min=_f("DYNAMIC_TP_TIER_2_MIN", 15.0),
+        tp_tier_3_min=_f("DYNAMIC_TP_TIER_3_MIN", 30.0),
+        tp_tier_2_pct=_f("DYNAMIC_TP_TIER_2_PCT", 2.0),
+        tp_tier_3_pct=_f("DYNAMIC_TP_TIER_3_PCT", 1.0),
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -113,10 +133,11 @@ class LiveEngine:
     """
     
     def __init__(self, max_cycles: int = 1, smart_close_config: SmartCloseConfig = None,
-                 alerter=None):
+                 adaptive_config: AdaptiveConfig = None, alerter=None):
         self.state: Optional[LiveState] = None
         self._grid_engine: Optional[GridEngine] = None
         self._adaptive: Optional[AdaptiveGrid] = None
+        self._adaptive_config = adaptive_config or default_config()
         self._cycle_state = CycleState(max_cycles=max_cycles)
         self._smart_close = SmartCloseEngine(
             smart_close_config or _smart_close_config_from_env()
@@ -130,6 +151,15 @@ class LiveEngine:
         # Position sync
         self._last_position_sync = 0.0
         self._position_sync_interval = 10.0
+        # Patch C: two-cycle confirmation before treating exchange "flat"
+        # as truth. Bybit's REST `fetch_positions` occasionally returns a
+        # snapshot that lags the most-recent fill by a few seconds; a
+        # single transient flat reading would otherwise stomp our local
+        # position state, blow away `opened_at`, and reset the
+        # smart-close recovery window. Require N consecutive flat reads
+        # before we honour them.
+        self._consecutive_flat_syncs = 0
+        self._flat_confirm_threshold = 2
         
         logger.info("🔴 LiveEngine v4 initialized — REAL orders + smart close")
     
@@ -149,7 +179,7 @@ class LiveEngine:
         )
         
         self._adaptive = AdaptiveGrid(
-            config=default_config(),
+            config=self._adaptive_config,
             upper=coin_score.suggested_upper,
             lower=coin_score.suggested_lower,
             num_grids=coin_score.suggested_grids,
@@ -245,8 +275,11 @@ class LiveEngine:
                 # position via grid_engine.close_position (which sets
                 # reduceOnly=True). Mirror the in-memory state with
                 # perform_partial_close so the recovery window can run on
-                # the remainder. On any exchange-side failure, fall back to
-                # a full close so the bot never holds an unmanaged position.
+                # the remainder. If the exchange-side scale-out fails, DO NOT
+                # force a full close here — that would realize the whole loss
+                # immediately and violate the recovery-first policy. Instead,
+                # keep the grid alive, alert loudly, and let the hard-floor /
+                # recovery path re-evaluate on the next tick.
                 close_qty = (
                     self.state.position.qty
                     * self._smart_close.config.scale_out_fraction
@@ -259,24 +292,34 @@ class LiveEngine:
                 except Exception as e:
                     logger.error(
                         f"⚖️  LIVE SCALE-OUT exchange call raised: {e} — "
-                        f"falling back to full close"
+                        f"holding position for recovery instead of force-closing"
                     )
                     order = None
                 if not order:
                     logger.error(
                         f"⚖️  LIVE SCALE-OUT failed (no order ack) — "
-                        f"falling back to full close"
+                        f"holding position for recovery instead of force-closing"
                     )
-                    return await self._handle_close(
-                        CloseReason.DRAWDOWN.value, pnl_result.total_pnl
+                    await self._alert_critical(
+                        f"⚖️ <b>LIVE SCALE-OUT FAILED</b> {self.state.grid.symbol}\n"
+                        f"Requested reduce-only close of {close_qty:.6f} {pos_side} at hard floor, "
+                        f"but received no exchange acknowledgement.\n"
+                        f"<b>Holding remainder for recovery; no forced full close was sent.</b>"
                     )
+                    return None
                 # Mirror in-memory state so recovery window + scaled_out flag
                 # are correctly tracked for the remainder of the position.
                 realised, qty = perform_partial_close(
                     self.state.position, self.state.imbalance, price,
                     fraction=self._smart_close.config.scale_out_fraction,
                 )
-                self._smart_close.reset_recovery()
+                # Patch G: do NOT reset_recovery() here. The whole point of
+                # the partial-close-then-recovery-window flow is that the
+                # window must persist across the scale-out so the remaining
+                # half gets a real chance to bounce. The original call here
+                # was wiping the window 300ms before the next breach hit and
+                # closed the remainder, turning every imbalance/floor event
+                # into a guaranteed loss.
                 logger.warning(
                     f"⚖️  LIVE SCALE-OUT: closed {qty:.6f} {pos_side} @ ${price:.4f} | "
                     f"realised=${realised:.4f} | remaining={self.state.position.qty:.6f} | "
@@ -344,6 +387,17 @@ class LiveEngine:
             await self.cancel_grid()
         except Exception as e:
             logger.error(f"_flatten_and_cancel: cancel_grid failed: {e}")
+        # 1.5) Re-sync position from exchange BEFORE deciding whether to
+        # market-close. Without this, a grid that placed at-the-market
+        # limit orders and got filled before the WS subscription was live
+        # (or before the periodic 10s sync ran) shows local qty=0 even
+        # though Bybit holds a real position — we'd skip the flatten and
+        # leave an orphan. Sync also picks up any fills that landed in
+        # the gap between cancel_grid and now.
+        try:
+            await self._sync_position_from_exchange()
+        except Exception as e:
+            logger.error(f"_flatten_and_cancel: pre-flatten sync failed: {e}")
         # 2) Close any remaining position via reduce-only market order.
         if not self.state.position.is_flat and self.state.position.qty > 0:
             symbol = self.state.grid.symbol
@@ -457,30 +511,80 @@ class LiveEngine:
         return None
     
     async def _sync_position_from_exchange(self):
-        """Sync position from Bybit API."""
+        """Sync position from Bybit API.
+
+        Bybit sometimes returns ``None`` for ``contracts`` / ``entryPrice``
+        when the account is flat — naive ``float(None)`` would raise and
+        abort the whole sync, leaving stale local state. We coerce ``None``
+        to ``0.0`` instead.
+
+        We also stamp ``opened_at`` / ``last_fill_at`` whenever we observe a
+        live position with no local timestamp (e.g. sync raced ahead of the
+        WebSocket fill or we restarted while a position was already open).
+        Without this, ``position.age_seconds`` stays at 0 forever and the
+        ``min_position_age_sec`` guard + emergency-imbalance bypass in
+        ``grid_core.check_close_conditions`` permanently block the
+        hard-loss floor from firing.
+        """
         if not self._grid_engine or not self.state:
             return
-        
+
         try:
             symbol = self.state.grid.symbol
             positions = await self._grid_engine.exchange.fetch_positions([symbol])
-            
+
             for pos in positions:
-                if pos["symbol"] == symbol:
-                    qty = abs(float(pos.get("contracts", 0)))
-                    side = pos.get("side", "")
-                    entry = float(pos.get("entryPrice", 0))
-                    
-                    if qty > 0:
-                        self.state.position.qty = qty
-                        self.state.position.side = "Buy" if side == "long" else "Sell"
-                        self.state.position.entry_price = entry
+                if pos.get("symbol") != symbol:
+                    continue
+                qty = abs(float(pos.get("contracts") or 0))
+                side = pos.get("side") or ""
+                entry = float(pos.get("entryPrice") or 0)
+
+                if qty > 0 and entry > 0:
+                    self.state.position.qty = qty
+                    self.state.position.side = "Buy" if side == "long" else "Sell"
+                    self.state.position.entry_price = entry
+                    # Stamp open/last-fill timestamps if missing so the
+                    # smart-close engine's age-based guards work.
+                    now_ts = time.time()
+                    if self.state.position.opened_at <= 0:
+                        self.state.position.opened_at = now_ts
+                    if self.state.position.last_fill_at <= 0:
+                        self.state.position.last_fill_at = now_ts
+                    # Real position observed → reset flat-confirmation
+                    # counter so a future flat reading must be confirmed
+                    # again from scratch.
+                    self._consecutive_flat_syncs = 0
+                else:
+                    # Patch C: don't trust a single "flat" reading. Bybit's
+                    # REST snapshot can lag a fresh fill by ~1-3s; a stomp
+                    # here zeroes opened_at/recovery and lets losses run
+                    # uncapped on the next cycle. Require N consecutive
+                    # flat reads before we honour them. While unconfirmed,
+                    # leave local state untouched so smart-close keeps
+                    # working from WS-sourced data.
+                    if not self.state.position.is_flat:
+                        self._consecutive_flat_syncs += 1
+                        if self._consecutive_flat_syncs >= self._flat_confirm_threshold:
+                            logger.info(
+                                f"Position sync: confirmed flat after "
+                                f"{self._consecutive_flat_syncs} syncs — resetting local state"
+                            )
+                            reset_position(self.state.position)
+                            self._consecutive_flat_syncs = 0
+                        else:
+                            logger.debug(
+                                f"Position sync: exchange reports flat "
+                                f"({self._consecutive_flat_syncs}/{self._flat_confirm_threshold}) — "
+                                f"holding local state pending confirmation"
+                            )
                     else:
-                        reset_position(self.state.position)
-                    
-                    logger.debug(f"Position synced: {qty} {side} @ {entry}")
-                    break
-        
+                        # Both local and exchange are flat — fully consistent.
+                        self._consecutive_flat_syncs = 0
+
+                logger.debug(f"Position synced: {qty} {side} @ {entry}")
+                break
+
         except Exception as e:
             logger.error(f"Position sync failed: {e}")
     
@@ -531,15 +635,38 @@ class LiveEngine:
         if self._grid_engine and self.state:
             await self._grid_engine.cancel_grid(self.state.grid)
     
+    def _allocated_margin_usdt(self) -> float:
+        """Margin reserved by this grid (post-fills, otherwise allocation budget)."""
+        if not self.state:
+            return 0.0
+        # Match dry_run_engine: order_size_usdt is notional per level; margin = notional/leverage.
+        try:
+            return allocated_margin_usdt(
+                self.state.grid.order_size_usdt,
+                self.state.grid.num_grids,
+            )
+        except Exception:
+            level_count = len(self.state.grid.grid_levels) or self.state.grid.num_grids or 1
+            lev = max(1, self.state.grid.leverage or 1)
+            return float(self.state.grid.order_size_usdt or 0.0) * level_count / lev
+
+    def _target_pnl_low_usdt(self) -> float:
+        return self._allocated_margin_usdt() * TARGET_PNL_PCT_LOW / 100.0
+
+    def _target_pnl_high_usdt(self) -> float:
+        return self._allocated_margin_usdt() * TARGET_PNL_PCT_HIGH / 100.0
+
     def get_status(self) -> Dict[str, Any]:
         if not self.state:
             return {"active": False}
-        
+
         s = self.state
         pos = s.position
         total = pos.realized_pnl + pos.unrealized_pnl
-        
-        return {
+        duration = time.time() - (s.started_at or time.time())
+        allocated = self._allocated_margin_usdt()
+
+        status = {
             "active": s.is_active,
             "dry_run": False,
             "live": True,
@@ -570,9 +697,44 @@ class LiveEngine:
                     "timestamp": f.get("timestamp", 0),
                     "pnl": f.get("pnl", 0),
                 }
-                for f in s.fills[-10:]
+                for f in s.fills[-50:]
             ],
+            "grid_levels": [
+                {
+                    "index": getattr(lv, "index", i),
+                    "price": getattr(lv, "price", 0.0),
+                    "side": getattr(lv, "side", "Buy"),
+                    "status": getattr(lv, "status", "pending"),
+                }
+                for i, lv in enumerate(s.grid.grid_levels)
+            ],
+            "duration_sec": round(duration, 1),
+            "allocated_margin_usdt": round(allocated, 4),
+            "target_pnl_low": round(self._target_pnl_low_usdt(), 4),
+            "target_pnl_high": round(self._target_pnl_high_usdt(), 4),
+            "target_pnl_pct_low": TARGET_PNL_PCT_LOW,
+            "target_pnl_pct_high": TARGET_PNL_PCT_HIGH,
+            "max_drawdown_pct": MAX_DRAWDOWN_PCT,
         }
+
+        if self._adaptive:
+            adaptive_status = self._adaptive.status
+            status["v3_adaptive"] = {
+                "spike_active": adaptive_status["spike_active"],
+                "spike_direction": adaptive_status["spike_state"]["direction"],
+                "exposure_buy_fills": adaptive_status["exposure"]["buy_fills"],
+                "exposure_sell_fills": adaptive_status["exposure"]["sell_fills"],
+                "exposure_consecutive": adaptive_status["exposure"]["consecutive_same_side"],
+                "exposure_breached": adaptive_status["exposure"]["breached"],
+                "imbalance_ratio": adaptive_status["exposure"]["imbalance_ratio"],
+                "recenters": adaptive_status["recenters"],
+                "range_pct": adaptive_status["range_pct"],
+                "trailing_enabled": adaptive_status["trailing_enabled"],
+            }
+            status["upper"] = adaptive_status["upper"]
+            status["lower"] = adaptive_status["lower"]
+
+        return status
     
     def notify_fill(self, order_id: str, side: str, qty: float, price: float):
         """Called by WebSocket handler when an order fills."""

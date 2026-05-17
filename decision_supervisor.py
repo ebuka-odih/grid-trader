@@ -13,7 +13,7 @@ from typing import Iterable
 
 from coin_scanner import CoinScore
 from trading_agent import PreTradeDecision
-from config import MIN_SAFE_LEVERAGE, MAX_SAFE_LEVERAGE
+from config import MIN_SAFE_LEVERAGE, clamp_leverage, resolve_profile_leverage, resolve_profile_max_leverage
 
 logger = logging.getLogger("decision_supervisor")
 
@@ -42,6 +42,26 @@ class DecisionSupervisor:
     DEFAULT_MIN_GRID_WIDTH_PCT = 0.25
     DEFAULT_MIN_GRIDS = 10
     DEFAULT_MAX_GRIDS = 20
+    DEFAULT_MIN_ENTRY_QUALITY = 0.35
+    STRONG_ENTRY_QUALITY = 0.70
+    VALID_SPACING_MODES = {"balanced", "buy_weighted", "sell_weighted"}
+    BORDERLINE_CONFIDENCE_GRACE = 0.05
+    BORDERLINE_ENTRY_QUALITY_GRACE = 0.08
+    BORDERLINE_GRID_WIDTH_TOLERANCE = 0.20
+
+    @staticmethod
+    def _clamp_grid_around_price(price: float, lower: float, upper: float, target_width_pct: float) -> tuple[float, float]:
+        half_span = price * max(target_width_pct, 0.0) / 100.0 / 2.0
+        current_mid = (float(lower) + float(upper)) / 2.0
+        shift = price - current_mid
+        new_lower = float(lower) + shift
+        new_upper = float(upper) + shift
+        current_half_span = max((new_upper - new_lower) / 2.0, 1e-9)
+        if abs(current_half_span - half_span) > 1e-9:
+            scale = half_span / current_half_span
+            new_lower = price - (price - new_lower) * scale
+            new_upper = price + (new_upper - price) * scale
+        return round(new_lower, 6), round(new_upper, 6)
 
     def review_pre_trade_decision(
         self,
@@ -76,9 +96,17 @@ class DecisionSupervisor:
 
         min_confidence = float(token_profile.get("min_confidence", self.DEFAULT_MIN_CONFIDENCE))
         if decision.confidence < min_confidence:
-            reasons.append(
-                f"Confidence {decision.confidence:.2f} below minimum {min_confidence:.2f}"
-            )
+            confidence_gap = min_confidence - float(decision.confidence)
+            entry_quality_hint = float(getattr(coin_score, "entry_quality_score", 0.0) or 0.0)
+            if confidence_gap <= self.BORDERLINE_CONFIDENCE_GRACE and entry_quality_hint >= self.STRONG_ENTRY_QUALITY:
+                warnings.append(
+                    f"Confidence auto-raised from {decision.confidence:.2f} to minimum {min_confidence:.2f} because entry quality is strong"
+                )
+                decision.confidence = min_confidence
+            else:
+                reasons.append(
+                    f"Confidence {decision.confidence:.2f} below minimum {min_confidence:.2f}"
+                )
 
         if decision.lower >= decision.upper:
             reasons.append(
@@ -93,27 +121,83 @@ class DecisionSupervisor:
             max_width = float(token_profile.get("max_grid_width_pct", self.DEFAULT_MAX_GRID_WIDTH_PCT))
             min_width = float(token_profile.get("min_grid_width_pct", self.DEFAULT_MIN_GRID_WIDTH_PCT))
             if width_pct > max_width:
-                reasons.append(f"Grid width {width_pct:.2f}% exceeds max {max_width:.2f}%")
+                overflow_pct = (width_pct - max_width) / max(max_width, 1e-9)
+                if overflow_pct <= self.BORDERLINE_GRID_WIDTH_TOLERANCE:
+                    decision.lower, decision.upper = self._clamp_grid_around_price(
+                        coin_score.price,
+                        decision.lower,
+                        decision.upper,
+                        max_width,
+                    )
+                    warnings.append(
+                        f"Grid width auto-tightened from {width_pct:.2f}% to max {max_width:.2f}%"
+                    )
+                else:
+                    reasons.append(f"Grid width {width_pct:.2f}% exceeds max {max_width:.2f}%")
             if width_pct < min_width:
-                reasons.append(f"Grid width {width_pct:.2f}% below min {min_width:.2f}%")
+                underflow_pct = (min_width - width_pct) / max(min_width, 1e-9)
+                if underflow_pct <= self.BORDERLINE_GRID_WIDTH_TOLERANCE:
+                    decision.lower, decision.upper = self._clamp_grid_around_price(
+                        coin_score.price,
+                        decision.lower,
+                        decision.upper,
+                        min_width,
+                    )
+                    warnings.append(
+                        f"Grid width auto-widened from {width_pct:.2f}% to min {min_width:.2f}%"
+                    )
+                else:
+                    reasons.append(f"Grid width {width_pct:.2f}% below min {min_width:.2f}%")
 
         min_grids = int(token_profile.get("min_grids", self.DEFAULT_MIN_GRIDS))
         max_grids = int(token_profile.get("max_grids", self.DEFAULT_MAX_GRIDS))
         if decision.num_grids < min_grids or decision.num_grids > max_grids:
-            reasons.append(
-                f"Grid count {decision.num_grids} outside allowed range {min_grids}-{max_grids}"
+            original_grids = decision.num_grids
+            decision.num_grids = max(min_grids, min(max_grids, int(decision.num_grids)))
+            warnings.append(
+                f"Grid count auto-clamped from {original_grids} to {decision.num_grids} within {min_grids}-{max_grids}"
             )
 
-        profile_leverage = int(token_profile.get("leverage", max(decision.leverage, MIN_SAFE_LEVERAGE)))
-        raw_max_leverage = min(
-            MAX_SAFE_LEVERAGE,
-            int(token_profile.get("max_leverage", MAX_SAFE_LEVERAGE)),
-        )
-        max_leverage = max(MIN_SAFE_LEVERAGE, raw_max_leverage)
+        profile_leverage = resolve_profile_leverage(token_profile, fallback=decision.leverage)
+        max_leverage = resolve_profile_max_leverage(token_profile)
         if decision.leverage < MIN_SAFE_LEVERAGE:
             reasons.append(f"Leverage {decision.leverage}x below high-frequency minimum {MIN_SAFE_LEVERAGE}x")
-        elif decision.leverage > max_leverage:
-            reasons.append(f"Leverage {decision.leverage}x exceeds max {max_leverage}x")
+        else:
+            clamped_leverage = clamp_leverage(decision.leverage, maximum=max_leverage)
+            if clamped_leverage != decision.leverage:
+                warnings.append(f"Leverage auto-clamped from {decision.leverage}x to {clamped_leverage}x")
+                decision.leverage = clamped_leverage
+
+        entry_quality = float(getattr(coin_score, "entry_quality_score", 0.0) or 0.0)
+        min_entry_quality = float(token_profile.get("min_entry_quality", self.DEFAULT_MIN_ENTRY_QUALITY))
+        if entry_quality < min_entry_quality:
+            quality_gap = min_entry_quality - entry_quality
+            if (
+                quality_gap <= self.BORDERLINE_ENTRY_QUALITY_GRACE
+                and decision.direction in {"long", "short"}
+                and ((decision.direction == "long" and decision.market_regime == "trending_up")
+                     or (decision.direction == "short" and decision.market_regime == "trending_down"))
+                and float(getattr(coin_score, "pullback_depth_pct", 0.0) or 0.0) >= 0.35
+            ):
+                warnings.append(
+                    f"Borderline entry quality {entry_quality:.2f} accepted because regime, direction, and pullback are aligned"
+                )
+            else:
+                reasons.append(
+                    f"Entry quality {entry_quality:.2f} below minimum {min_entry_quality:.2f}"
+                )
+
+        spacing_mode = str(getattr(coin_score, "entry_shape_spacing", "balanced") or "balanced")
+        if spacing_mode not in self.VALID_SPACING_MODES:
+            warnings.append(f"Unknown entry spacing mode: {spacing_mode}")
+
+        template_name = str(getattr(coin_score, "entry_shape_template", "atr_box") or "atr_box")
+        if entry_quality >= self.STRONG_ENTRY_QUALITY:
+            warnings.append(
+                f"Strong entry shape: template={template_name} spacing={spacing_mode} quality={entry_quality:.2f}"
+            )
+        elif template_name == "atr_box":
+            warnings.append("Fallback atr_box entry shape in use")
 
         if decision.market_regime == "trending_up" and decision.direction == "short":
             warnings.append("Short decision conflicts with trending_up regime")

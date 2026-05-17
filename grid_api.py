@@ -25,8 +25,17 @@ from typing import Optional
 # downstream module reads env. Keep this above the FastAPI import too —
 # admin.py imports runtime_config; doing it here makes the order obvious.
 import runtime_config  # noqa: F401  side-effect: applies overlay on import
+from config import (
+    DEFAULT_LEVERAGE,
+    EMERGENCY_LIQUIDATION_BUFFER_PCT,
+    MAX_SINGLE_DIRECTION_EXPOSURE_PCT,
+    MAX_TOTAL_WALLET_EXPOSURE_PCT,
+    MAX_TRADE_WALLET_EXPOSURE_PCT,
+    PORTFOLIO_RESERVE_PCT,
+    clamp_leverage,
+)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -60,6 +69,7 @@ def _get_state_file() -> _Path:
     return candidates[0][0]
 
 BOT_STATE_FILE = _get_state_file()
+MANUAL_CLOSE_REQUESTS_FILE = runtime_config.DATA_DIR / "manual_close_requests.jsonl"
 
 # ── Logging ──────────────────────────────────────────────
 logger = logging.getLogger("grid_api")
@@ -70,7 +80,52 @@ logging.basicConfig(
 
 logger.info(f"Using state file: {BOT_STATE_FILE}")
 
-# ── Shared state store ────────────────────────────────────
+
+def _runtime_portfolio_defaults() -> dict:
+    """Return live portfolio caps from runtime/env with config fallbacks."""
+
+    def _env_float(key: str, default: float) -> float:
+        try:
+            return float(os.getenv(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    max_total = _env_float("MAX_TOTAL_WALLET_EXPOSURE_PCT", MAX_TOTAL_WALLET_EXPOSURE_PCT)
+    reserve_pct = _env_float("PORTFOLIO_RESERVE_PCT", PORTFOLIO_RESERVE_PCT)
+    max_single_direction = _env_float(
+        "MAX_SINGLE_DIRECTION_EXPOSURE_PCT",
+        MAX_SINGLE_DIRECTION_EXPOSURE_PCT,
+    )
+    max_trade = _env_float("MAX_TRADE_WALLET_EXPOSURE_PCT", MAX_TRADE_WALLET_EXPOSURE_PCT)
+    emergency_buffer = _env_float(
+        "EMERGENCY_LIQUIDATION_BUFFER_PCT",
+        EMERGENCY_LIQUIDATION_BUFFER_PCT,
+    )
+    return {
+        "max_exposure_pct": round(max_total, 4),
+        "reserved_pct": round(reserve_pct, 4),
+        "max_total_wallet_exposure_pct": round(max_total, 4),
+        "max_single_direction_exposure_pct": round(max_single_direction, 4),
+        "max_trade_wallet_exposure_pct": round(max_trade, 4),
+        "reserve_pct": round(reserve_pct, 4),
+        "emergency_liquidation_buffer_pct": round(emergency_buffer, 4),
+    }
+
+
+def _append_manual_close_request(slot_id: int, slot: dict, reason: str = "manual_close") -> dict:
+    runtime_config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    request = {
+        "slot_id": int(slot_id),
+        "trade_id": slot.get("trade_id") or slot.get("grid_id") or f"slot_{slot_id}",
+        "symbol": slot.get("symbol"),
+        "reason": reason,
+        "requested_at": time.time(),
+    }
+    with MANUAL_CLOSE_REQUESTS_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(request) + "\n")
+    return request
+
+# ── In-memory state cache
 # Written by the bot's main thread/task, read by API handlers.
 # This is a simple in-process dict — no external DB needed for live state.
 DEFAULT_STATE: dict = {
@@ -84,10 +139,7 @@ DEFAULT_STATE: dict = {
         "unrealized_pnl": 0.0,
         "realized_pnl": 0.0,
     },
-    "portfolio": {
-        "max_exposure_pct": 95.0,
-        "reserved_pct": 5.0,
-    },
+    "portfolio": _runtime_portfolio_defaults(),
     "slots": {},              # slot_id -> slot data
     "completed_trades": [],   # last 50 closed trades
     "scanner_candidates": [], # top 10 scanner picks
@@ -398,7 +450,7 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _state_with_metadata() -> dict:
+def _state_with_metadata(access_session: Optional[dict] = None) -> dict:
     """Return the current state plus freshness metadata for clients.
     
     Also recalculates wallet balance from realized PnL to ensure it reflects trading results.
@@ -435,6 +487,9 @@ def _state_with_metadata() -> dict:
     mutable_state["wallet"]["realized_pnl"] = round(_safe_float(state_wallet.get("realized_pnl")), 4)
     mutable_state["wallet"]["unrealized_pnl"] = round(active_unrealized, 4)
 
+    mutable_state["portfolio"] = dict(_state.get("portfolio", {}))
+    mutable_state["portfolio"].update(_runtime_portfolio_defaults())
+
     mutable_state["stats"] = dict(_state.get("stats", {}))
     mutable_state["stats"].update(db_stats)
     # Override PnL with current run values (not cumulative DB which spans multiple runs)
@@ -447,6 +502,7 @@ def _state_with_metadata() -> dict:
         **mutable_state,
         "connected_clients": len(manager.active_connections),
         "state_age_seconds": state_age_seconds,
+        "dashboard_access": build_access_context(access_session),
     }
 
 
@@ -493,10 +549,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Admin router ──────────────────────────────────────────
-# Authenticated config + secrets management. See admin.py for routes.
-from admin import router as admin_router
+# ── Admin / access routers ─────────────────────────────────
+# Authenticated config + secrets management plus viewer/admin dashboard sessions.
+from admin import (
+    router as admin_router,
+    access_router,
+    auth_required as access_auth_required,
+    dashboard_tenant as access_dashboard_tenant,
+    build_access_context,
+    require_admin_access,
+    require_viewer_access,
+)
 app.include_router(admin_router)
+app.include_router(access_router)
 
 # ── WebSocket clients ─────────────────────────────────────
 class ConnectionManager:
@@ -531,36 +596,82 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _viewer_session(authorization: Optional[str], tenant: Optional[str]) -> dict:
+    return require_viewer_access(authorization, tenant=tenant)
+
+
+def _admin_session(authorization: Optional[str], tenant: Optional[str]) -> dict:
+    return require_admin_access(authorization, tenant=tenant)
+
+
+def _ws_authorization(websocket: WebSocket) -> Optional[str]:
+    auth_header = websocket.headers.get("authorization")
+    if auth_header:
+        return auth_header
+    token = websocket.query_params.get("token")
+    if token:
+        return f"Bearer {token}"
+    return None
+
+
 # ── REST Endpoints ────────────────────────────────────────
 @app.get("/api/state")
-async def get_state():
+async def get_state(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
     """Full bot state snapshot."""
+    session = _viewer_session(authorization, x_tenant_id)
     _load_state_file()
-    return _state_with_metadata()
+    return _state_with_metadata(session)
 
 
 @app.get("/api/slots")
-async def get_slots():
+async def get_slots(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
     """Active grid slots."""
+    _viewer_session(authorization, x_tenant_id)
     return list(_state["slots"].values())
 
 
 @app.get("/api/slots/{slot_id}")
-async def get_slot(slot_id: int):
+async def get_slot(slot_id: int, authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     slot = _state["slots"].get(str(slot_id)) or _state["slots"].get(slot_id)
     if slot is None:
         raise HTTPException(404, f"Slot {slot_id} not found")
     return slot
 
 
+@app.post("/api/slots/{slot_id}/close")
+async def close_slot(slot_id: int, payload: Optional[dict] = None, authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _admin_session(authorization, x_tenant_id)
+    slot = _state["slots"].get(str(slot_id)) or _state["slots"].get(slot_id)
+    if slot is None:
+        raise HTTPException(404, f"Slot {slot_id} not found")
+    if slot.get("status") != "active":
+        raise HTTPException(409, f"Slot {slot_id} is not active")
+
+    reason = str((payload or {}).get("reason") or "manual_close")
+    request = _append_manual_close_request(slot_id, slot, reason=reason)
+    slot["pending_close"] = True
+    slot["pending_close_reason"] = reason
+    slot["pending_close_requested_at"] = request["requested_at"]
+    _state["last_update"] = time.time()
+    await manager.broadcast({
+        "type": "slot_close_requested",
+        "data": {"slot_id": slot_id, "symbol": slot.get("symbol"), "reason": reason},
+        "ts": request["requested_at"],
+    })
+    return {"ok": True, "status": "requested", **request}
+
+
 @app.get("/api/wallet")
-async def get_wallet():
+async def get_wallet(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    session = _viewer_session(authorization, x_tenant_id)
     _load_state_file()
-    return _state_with_metadata()["wallet"]
+    return _state_with_metadata(session)["wallet"]
 
 
 @app.get("/api/stats")
-async def get_stats():
+async def get_stats(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     """Get trade stats. PnL comes from the state file (current run only), not cumulative DB."""
     try:
         _load_state_file()
@@ -577,17 +688,20 @@ async def get_stats():
 
 
 @app.get("/api/scanner")
-async def get_scanner():
+async def get_scanner(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     return _state["scanner_candidates"]
 
 
 @app.get("/api/heartbeat")
-async def get_heartbeat():
+async def get_heartbeat(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     return _state["heartbeat"]
 
 
 @app.get("/api/trades")
-async def get_trades(limit: int = 50):
+async def get_trades(limit: int = 50, authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     """Get completed trades from database (source of truth)."""
     try:
         _, trades = _load_db_performance(limit=limit)
@@ -599,25 +713,29 @@ async def get_trades(limit: int = 50):
 
 
 @app.get("/api/prices")
-async def get_prices():
+async def get_prices(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     return _state["current_prices"]
 
 
 @app.get("/api/hummingbot")
-async def get_hummingbot_status():
+async def get_hummingbot_status(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
     """Hummingbot paper adapter/config/signal status for dashboard display."""
+    _viewer_session(authorization, x_tenant_id)
     return _load_hummingbot_status()
 
 
 @app.post("/api/pause")
-async def pause_bot():
+async def pause_bot(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _admin_session(authorization, x_tenant_id)
     _state["mode"] = "paused"
     await manager.broadcast({"type": "bot_paused"})
     return {"status": "paused"}
 
 
 @app.post("/api/resume")
-async def resume_bot():
+async def resume_bot(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _admin_session(authorization, x_tenant_id)
     _state["mode"] = "running"
     await manager.broadcast({"type": "bot_resumed"})
     return {"status": "running"}
@@ -630,7 +748,8 @@ async def health():
 
 # ── Portfolio Deployment Endpoints ───────────────────────
 @app.get("/api/portfolio/status")
-async def get_portfolio_status():
+async def get_portfolio_status(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _viewer_session(authorization, x_tenant_id)
     """Get portfolio-level exposure and status."""
     wallet = _state.get("wallet", {})
     slots = _state.get("slots", {})
@@ -659,7 +778,8 @@ async def get_portfolio_status():
 
 
 @app.post("/api/portfolio/deploy")
-async def deploy_portfolio(config: dict):
+async def deploy_portfolio(config: dict, authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _admin_session(authorization, x_tenant_id)
     """Deploy multiple grids across top scanner candidates.
     
     Args:
@@ -680,7 +800,7 @@ async def deploy_portfolio(config: dict):
     max_tokens = config.get("max_tokens", 10)
     exposure_pct = config.get("exposure_pct", 2.0)
     use_cross_margin = config.get("use_cross_margin", True)
-    max_leverage = config.get("max_leverage", 10)
+    max_leverage = clamp_leverage(config.get("max_leverage", DEFAULT_LEVERAGE))
 
     wallet_balance = _state.get("wallet", {}).get("initial_balance", 100.0)
     capital_per_token = wallet_balance * (exposure_pct / 100)
@@ -708,7 +828,7 @@ async def deploy_portfolio(config: dict):
             "upper_price": candidate.get("grid_range_high"),
             "num_levels": candidate.get("suggested_levels", 15),
             "capital_usdt": capital_per_token,
-            "leverage": min(candidate.get("max_leverage", 10), max_leverage),
+            "leverage": clamp_leverage(candidate.get("suggested_leverage", candidate.get("max_leverage", max_leverage)), maximum=max_leverage),
             "max_leverage": max_leverage,
             "is_cross_margin": use_cross_margin,
         }
@@ -724,7 +844,8 @@ async def deploy_portfolio(config: dict):
 
 
 @app.post("/api/scanner/deploy-best")
-async def deploy_best_token():
+async def deploy_best_token(authorization: Optional[str] = Header(None), x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")):
+    _admin_session(authorization, x_tenant_id)
     """Quick deploy on the #1 scanner candidate."""
     candidates = _state.get("scanner_candidates", [])
     if not candidates:
@@ -739,7 +860,7 @@ async def deploy_best_token():
         "symbol": best.get("symbol"),
         "grid_range": [best.get("grid_range_low"), best.get("grid_range_high")],
         "capital": round(capital_per_token, 2),
-        "leverage": min(best.get("max_leverage", 10), 10),
+        "leverage": clamp_leverage(best.get("suggested_leverage", best.get("max_leverage", DEFAULT_LEVERAGE))),
         "message": f"Ready to deploy {best.get('symbol')} grid with ${round(capital_per_token, 2)} margin",
     }
 
@@ -747,16 +868,24 @@ async def deploy_best_token():
 # ── WebSocket Endpoint ────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    session = None
+    try:
+        session = require_viewer_access(
+            _ws_authorization(websocket),
+            tenant=websocket.query_params.get("tenant") or websocket.headers.get("x-tenant-id"),
+        )
+    except HTTPException as exc:
+        await websocket.close(code=4401 if exc.status_code == 401 else 4403, reason=str(exc.detail))
+        return
+
     await manager.connect(websocket)
     try:
         _load_state_file()
-        # Send initial state snapshot
         await websocket.send_json({
             "type": "snapshot",
-            "data": _state_with_metadata(),
+            "data": _state_with_metadata(session),
         })
 
-        # Keep connection alive, handle client commands
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=30)
@@ -765,11 +894,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 if cmd.get("action") == "ping":
                     await websocket.send_json({"type": "pong", "ts": time.time()})
                 elif cmd.get("action") == "subscribe":
-                    # Client subscribes to specific updates — already getting all via broadcast
                     await websocket.send_json({"type": "subscribed", "topics": cmd.get("topics", [])})
 
             except asyncio.TimeoutError:
-                # Keepalive ping
                 await websocket.send_json({"type": "ping", "ts": time.time()})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -796,7 +923,7 @@ async def _broadcast_loop():
             # Full state diff — UI handles it
             await manager.broadcast({
                 "type": "state_update",
-                "data": _state_with_metadata(),
+                "data": _state_with_metadata({"role": "viewer", "tenant": access_dashboard_tenant(), "expires_at": None}),
                 "ts": time.time(),
             })
             last_state = current

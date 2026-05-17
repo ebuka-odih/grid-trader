@@ -17,7 +17,7 @@ from typing import Optional
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, JSON, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from config import DEFAULT_LEVERAGE, DEFAULT_NUM_GRIDS
+from config import DEFAULT_LEVERAGE, DEFAULT_NUM_GRIDS, clamp_leverage
 
 logger = logging.getLogger("improvement_loop")
 
@@ -65,6 +65,15 @@ class GridCycleRecord(Base):
     direction = Column(String(10), default="neutral")
     adjusted_leverage = Column(Integer, default=0)
     adjusted_order_size = Column(Float, default=0.0)
+    entry_shape_template = Column(String(50), default="atr_box")
+    entry_shape_spacing = Column(String(50), default="balanced")
+    entry_quality_score = Column(Float, default=0.0)
+    entry_shape_confidence = Column(Float, default=0.0)
+    entry_buy_density_bias = Column(Float, default=0.5)
+    entry_sell_density_bias = Column(Float, default=0.5)
+    entry_shape_notes = Column(Text, default="")
+    fill_danger = Column(String(20), default="low")
+    fill_danger_score = Column(Float, default=0.0)
 
 
 class AgentLearningRecord(Base):
@@ -146,6 +155,23 @@ class ImprovementLoop:
                 ))
                 logger.info(f"📊 Migrated grid_cycles: added column {column.name}")
 
+            refreshed_columns = {
+                col["name"] for col in inspect(conn).get_columns("grid_cycles")
+            }
+            if {
+                "entry_quality_score",
+                "entry_shape_confidence",
+            }.issubset(refreshed_columns):
+                conn.execute(text(
+                    """
+                    UPDATE grid_cycles
+                    SET entry_quality_score = COALESCE(entry_quality_score, entry_shape_confidence, 0.0),
+                        entry_shape_confidence = COALESCE(entry_shape_confidence, entry_quality_score, 0.0)
+                    WHERE entry_quality_score IS NULL
+                       OR entry_shape_confidence IS NULL
+                    """
+                ))
+
     # ── Record Trades ──────────────────────────────────────────
 
     def record_fill(self, grid_id: str, symbol: str, side: str, price: float,
@@ -170,10 +196,27 @@ class ImprovementLoop:
     def record_cycle_start(self, grid_id: str, symbol: str, upper: float,
                            lower: float, num_grids: int, leverage: int,
                            direction: str = "neutral", adjusted_leverage: int = 0,
-                           adjusted_order_size: float = 0.0):
+                           adjusted_order_size: float = 0.0,
+                           entry_shape_template: str = "atr_box",
+                           entry_shape_spacing: str = "balanced",
+                           entry_shape_confidence: Optional[float] = None,
+                           entry_quality_score: Optional[float] = None,
+                           entry_buy_density_bias: float = 0.5,
+                           entry_sell_density_bias: float = 0.5,
+                           entry_shape_notes: str = ""):
         """Record the start of a grid cycle, including v2 runtime metadata for open grids."""
         session = self.Session()
         try:
+            canonical_entry_quality_score = float(
+                entry_quality_score
+                if entry_quality_score is not None
+                else (entry_shape_confidence if entry_shape_confidence is not None else 0.0)
+            )
+            legacy_entry_shape_confidence = float(
+                entry_shape_confidence
+                if entry_shape_confidence is not None
+                else canonical_entry_quality_score
+            )
             cycle = GridCycleRecord(
                 grid_id=grid_id, symbol=symbol,
                 upper_price=upper, lower_price=lower,
@@ -181,6 +224,13 @@ class ImprovementLoop:
                 direction=direction,
                 adjusted_leverage=adjusted_leverage or leverage,
                 adjusted_order_size=adjusted_order_size,
+                entry_shape_template=entry_shape_template,
+                entry_shape_spacing=entry_shape_spacing,
+                entry_quality_score=canonical_entry_quality_score,
+                entry_shape_confidence=legacy_entry_shape_confidence,
+                entry_buy_density_bias=entry_buy_density_bias,
+                entry_sell_density_bias=entry_sell_density_bias,
+                entry_shape_notes=entry_shape_notes,
             )
             session.add(cycle)
             session.commit()
@@ -194,7 +244,8 @@ class ImprovementLoop:
                            unrealized_pnl: float, fills: int, duration: float,
                            close_reason: str, wallet_balance: float = 0.0,
                            wallet_exposure_pct: float = 0.0, direction: str = "neutral",
-                           adjusted_leverage: int = 0, adjusted_order_size: float = 0.0):
+                           adjusted_leverage: int = 0, adjusted_order_size: float = 0.0,
+                           fill_danger: str = "low", fill_danger_score: float = 0.0):
         """Record the close of a grid cycle with v2 wallet context."""
         session = self.Session()
         try:
@@ -214,6 +265,8 @@ class ImprovementLoop:
                 cycle.direction = direction
                 cycle.adjusted_leverage = adjusted_leverage
                 cycle.adjusted_order_size = adjusted_order_size
+                cycle.fill_danger = fill_danger
+                cycle.fill_danger_score = fill_danger_score
                 session.commit()
                 logger.info(f"📝 Cycle closed: {grid_id} | pnl=${total_pnl:.4f} | reason={close_reason}")
         except Exception as e:
@@ -494,7 +547,7 @@ class ImprovementLoop:
 
         # Win rate too low → reduce leverage
         if stats["win_rate"] < 50:
-            suggestions["leverage"] = max(3, DEFAULT_LEVERAGE - 3)
+            suggestions["leverage"] = clamp_leverage(DEFAULT_LEVERAGE - 3)
             suggestions["reason"].append(f"Win rate {stats['win_rate']:.0f}% < 50% → reduce leverage")
 
         # Average PnL too low → increase grid count (more trades)

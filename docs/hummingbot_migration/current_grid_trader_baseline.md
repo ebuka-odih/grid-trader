@@ -6,8 +6,10 @@ This document freezes the known working custom `grid-trader` behavior before int
 
 - `MAX_CONCURRENT_GRIDS=50` target capacity for portfolio scanner deployment.
 - `MAX_TRADE_WALLET_EXPOSURE_PCT=2.0` per symbol/grid reserved-margin cap.
-- `MAX_SAFE_LEVERAGE=10` desired live/cross-margin leverage ceiling.
-- `MAX_DEPLOY_LEVERAGE=10` desired deployment leverage ceiling.
+- `MIN_SAFE_LEVERAGE=30` current live lower bound in the active grid-trader runtime.
+- `MAX_SAFE_LEVERAGE=50` current live/cross-margin leverage ceiling in the active grid-trader runtime.
+- `MIN_DEPLOY_LEVERAGE=30` legacy deploy alias mirrored from the safe lower bound.
+- `MAX_DEPLOY_LEVERAGE=50` legacy deploy alias mirrored from the safe ceiling.
 - `USE_LLM_BRAIN=False` deterministic scanner-ranked deployment is the stable default.
 
 ## Runtime target
@@ -20,7 +22,8 @@ This document freezes the known working custom `grid-trader` behavior before int
 
 - One dense grid per token/symbol.
 - Maximum 2% wallet exposure per trade/grid entry group.
-- Maximum 10x leverage for cross-margin grid trading.
+- Current active grid-trader runtime is operating in a 30–50x leverage band.
+- Future Hummingbot migration target / funded-risk preference remains a lower-leverage cross-margin design.
 - Cross-margin portfolio view: all positions share one wallet, so correlation and total exposure matter.
 - Do not close filled losing positions during normal lifecycle/stale cleanup while PnL is negative; hold until profitable, unless an emergency kill/risk condition overrides.
 

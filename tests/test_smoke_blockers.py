@@ -2,9 +2,11 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
 
+from coin_scanner import CoinScore
 from improvement_loop import ImprovementLoop
 from portfolio_risk_monitor import PortfolioRiskMonitor
 import multi_grid_manager
@@ -121,6 +123,214 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
             con.close()
 
             self.assertEqual(row, ("neutral", 8, 1.0))
+
+    def test_cycle_start_and_close_persist_entry_shape_and_fill_danger_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = os.path.join(tmpdir, "entry_shape_fill_danger.db")
+            journal = ImprovementLoop(f"sqlite:///{db_file}")
+
+            journal.record_cycle_start(
+                grid_id="grid_shape",
+                symbol="BTC/USDT:USDT",
+                upper=108.0,
+                lower=96.0,
+                num_grids=12,
+                leverage=7,
+                direction="long",
+                adjusted_leverage=7,
+                adjusted_order_size=2.5,
+                entry_shape_template="trend_pullback",
+                entry_shape_spacing="buy_weighted",
+                entry_shape_confidence=0.82,
+                entry_buy_density_bias=0.7,
+                entry_sell_density_bias=0.3,
+                entry_shape_notes="pullback ladder",
+            )
+            journal.record_cycle_close(
+                grid_id="grid_shape",
+                total_pnl=1.25,
+                realized_pnl=0.9,
+                unrealized_pnl=0.35,
+                fills=4,
+                duration=180.0,
+                close_reason="target_hit",
+                wallet_balance=101.25,
+                wallet_exposure_pct=12.0,
+                direction="long",
+                adjusted_leverage=7,
+                adjusted_order_size=2.5,
+                fill_danger="high",
+                fill_danger_score=0.8,
+            )
+
+            con = sqlite3.connect(db_file)
+            cols = {row[1] for row in con.execute("PRAGMA table_info(grid_cycles)")}
+            row = con.execute(
+                "SELECT entry_shape_template, entry_shape_spacing, entry_quality_score, entry_shape_confidence, "
+                "entry_buy_density_bias, entry_sell_density_bias, entry_shape_notes, "
+                "fill_danger, fill_danger_score "
+                "FROM grid_cycles WHERE grid_id='grid_shape'"
+            ).fetchone()
+            con.close()
+
+            self.assertIn("entry_quality_score", cols)
+            self.assertEqual(
+                row,
+                ("trend_pullback", "buy_weighted", 0.82, 0.82, 0.7, 0.3, "pullback ladder", "high", 0.8),
+            )
+
+    def test_migration_backfills_entry_quality_score_from_legacy_entry_shape_confidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = os.path.join(tmpdir, "legacy_entry_shape_confidence.db")
+            con = sqlite3.connect(db_file)
+            con.execute(
+                """
+                CREATE TABLE grid_cycles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    grid_id VARCHAR(100) UNIQUE,
+                    symbol VARCHAR(50),
+                    upper_price FLOAT,
+                    lower_price FLOAT,
+                    num_grids INTEGER,
+                    leverage INTEGER,
+                    entry_shape_template VARCHAR(50) DEFAULT 'atr_box',
+                    entry_shape_spacing VARCHAR(50) DEFAULT 'balanced',
+                    entry_shape_confidence FLOAT DEFAULT 0.0,
+                    entry_buy_density_bias FLOAT DEFAULT 0.5,
+                    entry_sell_density_bias FLOAT DEFAULT 0.5,
+                    entry_shape_notes TEXT DEFAULT ''
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO grid_cycles (
+                    grid_id, symbol, upper_price, lower_price, num_grids, leverage,
+                    entry_shape_template, entry_shape_spacing, entry_shape_confidence,
+                    entry_buy_density_bias, entry_sell_density_bias, entry_shape_notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy_grid",
+                    "SOL/USDT:USDT",
+                    170.0,
+                    150.0,
+                    10,
+                    5,
+                    "trend_pullback",
+                    "buy_weighted",
+                    0.67,
+                    0.65,
+                    0.35,
+                    "legacy confidence only",
+                ),
+            )
+            con.commit()
+            con.close()
+
+            ImprovementLoop(f"sqlite:///{db_file}")
+
+            con = sqlite3.connect(db_file)
+            cols = {row[1] for row in con.execute("PRAGMA table_info(grid_cycles)")}
+            row = con.execute(
+                "SELECT entry_quality_score, entry_shape_confidence FROM grid_cycles WHERE grid_id='legacy_grid'"
+            ).fetchone()
+            con.close()
+
+            self.assertIn("entry_quality_score", cols)
+            self.assertEqual(row, (0.67, 0.67))
+
+    def test_serialize_slots_exports_entry_shape_and_fill_danger_metadata(self):
+        coin_score = CoinScore(
+            symbol="BTC/USDT:USDT",
+            price=100.0,
+            high_24h=110.0,
+            low_24h=90.0,
+            volume_24h_usdt=1_000_000.0,
+            atr_pct=1.2,
+            range_pct=8.0,
+            mean_reversion_score=0.55,
+            grid_score=0.78,
+            suggested_upper=108.0,
+            suggested_lower=96.0,
+            suggested_grids=12,
+            suggested_leverage=7,
+            trend_direction="long",
+            market_regime="trending_up",
+            entry_quality_score=0.81,
+            range_position=0.35,
+            vwap_distance_pct=-0.8,
+            pullback_depth_pct=2.1,
+            slope_score=0.4,
+            acceleration_score=0.1,
+            entry_shape_template="trend_pullback",
+            entry_shape_spacing="buy_weighted",
+            entry_buy_density_bias=0.72,
+            entry_sell_density_bias=0.28,
+            entry_shape_notes="deeper bids below market",
+        )
+        slot = SimpleNamespace(
+            slot_id=1,
+            symbol="BTC/USDT:USDT",
+            decision=SimpleNamespace(direction="long"),
+            adjusted_leverage=7,
+            adjusted_order_size=2.5,
+            started_at=0.0,
+            close_reason=None,
+            coin_score=coin_score,
+            state=SimpleNamespace(
+                grid=SimpleNamespace(
+                    grid_id="grid_shape",
+                    upper_price=108.0,
+                    lower_price=96.0,
+                    num_grids=12,
+                )
+            ),
+            engine=SimpleNamespace(
+                get_status=lambda: {
+                    "total_pnl": 1.0,
+                    "realized_pnl": 0.6,
+                    "unrealized_pnl": 0.4,
+                    "fills": 4,
+                    "current_price": 101.0,
+                    "fill_log": [],
+                    "grid_levels": [],
+                    "allocated_margin_usdt": 2.5,
+                    "target_pnl_low": 0.5,
+                    "target_pnl_high": 1.2,
+                    "target_pnl_pct_low": 1.0,
+                    "target_pnl_pct_high": 2.0,
+                    "max_drawdown_pct": -0.8,
+                    "duration_sec": 120.0,
+                    "filled_levels": 3,
+                    "position_qty": 0.1,
+                    "position_side": "Buy",
+                    "entry_price": 100.5,
+                    "imbalance_ratio": 1.7,
+                },
+                _adaptive=SimpleNamespace(
+                    exposure_cap=SimpleNamespace(
+                        exposure=SimpleNamespace(consecutive_same_side=4)
+                    ),
+                    config=SimpleNamespace(max_same_side_fills=5),
+                ),
+            ),
+        )
+
+        with patch("multi_grid_manager.time.time", return_value=120.0):
+            payload = multi_grid_manager._serialize_slots({1: slot})
+
+        row = payload["1"]
+        self.assertEqual(row["entry_shape_template"], "trend_pullback")
+        self.assertEqual(row["entry_shape_spacing"], "buy_weighted")
+        self.assertEqual(row["entry_quality_score"], 0.81)
+        self.assertEqual(row["entry_buy_density_bias"], 0.72)
+        self.assertEqual(row["entry_sell_density_bias"], 0.28)
+        self.assertEqual(row["entry_shape_notes"], "deeper bids below market")
+        self.assertEqual(row["fill_danger"], "high")
+        self.assertEqual(row["fill_danger_score"], 0.8)
+        self.assertEqual(row["fill_danger_same_side_fills"], 4)
+        self.assertEqual(row["fill_danger_max_same_side_fills"], 5)
 
     def test_state_writer_loads_closed_trade_stats_from_database_source_of_truth(self):
         """Dashboard state stats must use durable DB counts, not restart-local memory counters."""
@@ -243,6 +453,104 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
         )
 
         self.assertTrue(result["approved"], result)
+
+    def test_build_scanner_candidate_decision_matches_algorithmic_defaults(self):
+        candidate = CoinScore(
+            symbol="BTC/USDT:USDT",
+            price=100.0,
+            high_24h=108.0,
+            low_24h=96.0,
+            volume_24h_usdt=50_000_000,
+            atr_pct=1.2,
+            range_pct=7.0,
+            mean_reversion_score=0.35,
+            grid_score=0.84,
+            suggested_upper=108.0,
+            suggested_lower=96.0,
+            suggested_grids=14,
+            suggested_leverage=50,
+            trend_direction="long",
+        )
+
+        decision = multi_grid_manager.build_scanner_candidate_decision(
+            candidate,
+            token_profile={"leverage": 12},
+            wallet_balance=100.0,
+        )
+
+        self.assertEqual(decision.symbol, "BTC/USDT:USDT")
+        self.assertEqual(decision.direction, "long")
+        self.assertEqual(decision.market_regime, "ranging")
+        self.assertEqual(decision.leverage, 10)
+        self.assertEqual(decision.num_grids, 10)
+        self.assertEqual(decision.confidence, 0.84)
+
+    def test_scanner_candidate_prefilter_rejects_obvious_supervisor_failures(self):
+        valid = CoinScore(
+            symbol="BTC/USDT:USDT",
+            price=100.0,
+            high_24h=106.0,
+            low_24h=94.0,
+            volume_24h_usdt=75_000_000,
+            atr_pct=1.1,
+            range_pct=6.0,
+            mean_reversion_score=0.75,
+            grid_score=0.82,
+            suggested_upper=106.0,
+            suggested_lower=94.0,
+            suggested_grids=12,
+            suggested_leverage=50,
+            trend_direction="neutral",
+            entry_quality_score=0.72,
+        )
+        low_quality = CoinScore(
+            symbol="DOGE/USDT:USDT",
+            price=100.0,
+            high_24h=106.0,
+            low_24h=94.0,
+            volume_24h_usdt=60_000_000,
+            atr_pct=1.0,
+            range_pct=6.0,
+            mean_reversion_score=0.7,
+            grid_score=0.81,
+            suggested_upper=106.0,
+            suggested_lower=94.0,
+            suggested_grids=12,
+            suggested_leverage=50,
+            trend_direction="neutral",
+            entry_quality_score=0.20,
+        )
+        too_wide = CoinScore(
+            symbol="SOL/USDT:USDT",
+            price=100.0,
+            high_24h=109.0,
+            low_24h=91.0,
+            volume_24h_usdt=55_000_000,
+            atr_pct=1.3,
+            range_pct=18.0,
+            mean_reversion_score=0.65,
+            grid_score=0.83,
+            suggested_upper=109.0,
+            suggested_lower=91.0,
+            suggested_grids=12,
+            suggested_leverage=50,
+            trend_direction="neutral",
+            entry_quality_score=0.70,
+        )
+
+        filtered = multi_grid_manager.prefilter_scanner_candidates_for_deploy(
+            [valid, low_quality, too_wide],
+            token_profile_by_symbol={
+                "BTC/USDT:USDT": {"min_entry_quality": 0.35, "max_grid_width_pct": 15.0},
+                "DOGE/USDT:USDT": {"min_entry_quality": 0.35, "max_grid_width_pct": 15.0},
+                "SOL/USDT:USDT": {"min_entry_quality": 0.35, "max_grid_width_pct": 15.0},
+            },
+            wallet_balance=100.0,
+        )
+
+        self.assertEqual([coin.symbol for coin in filtered], ["BTC/USDT:USDT", "SOL/USDT:USDT"])
+        repaired = next(coin for coin in filtered if coin.symbol == "SOL/USDT:USDT")
+        self.assertAlmostEqual(repaired.suggested_upper - repaired.suggested_lower, 15.0, places=5)
 
     # Removed: test_hummingbot_backend_factory_is_noop_for_default_dry_run
     # (is_hummingbot_execution_backend and create_execution_adapter were removed)

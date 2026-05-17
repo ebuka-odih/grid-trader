@@ -47,15 +47,25 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
             return default
 
     cfg = SmartCloseConfig(
+        time_decay_enabled=str(os.getenv("SMART_CLOSE_TIME_DECAY_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         time_decay_hours=_f("SMART_CLOSE_TIME_DECAY_HOURS", 4.0),
         time_decay_min_loss_pct=_f("SMART_CLOSE_TIME_DECAY_MIN_LOSS_PCT", 1.0),
+        momentum_exit_enabled=str(os.getenv("SMART_CLOSE_MOMENTUM_EXIT_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         momentum_threshold_pct=_f("SMART_CLOSE_MOMENTUM_THRESHOLD_PCT", 2.5),
         momentum_window_sec=_f("SMART_CLOSE_MOMENTUM_WINDOW_SEC", 60.0),
+        imbalance_close_enabled=str(os.getenv("SMART_CLOSE_IMBALANCE_CLOSE_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         imbalance_ratio_threshold=_f("SMART_CLOSE_IMBALANCE_RATIO", 3.5),
         imbalance_min_fills=int(_f("SMART_CLOSE_IMBALANCE_MIN_FILLS", 8)),
+        trailing_stop_enabled=str(os.getenv("SMART_CLOSE_TRAILING_STOP_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         trailing_stop_initial_pct=_f("SMART_CLOSE_TRAILING_INITIAL_PCT", 3.5),
         trailing_stop_tightened_pct=_f("SMART_CLOSE_TRAILING_TIGHTENED_PCT", 2.5),
         trailing_stop_tighten_hours=_f("SMART_CLOSE_TRAILING_TIGHTEN_HOURS", 4.0),
+        recovery_check_enabled=str(os.getenv("SMART_CLOSE_RECOVERY_CHECK_ENABLED", "false")).lower()
+        in ("1", "true", "yes", "on"),
         recovery_min_depth_pct=_f("SMART_CLOSE_RECOVERY_MIN_DEPTH_PCT", 1.5),
         recovery_max_hours=_f("SMART_CLOSE_RECOVERY_MAX_HOURS", 6.0),
         min_seconds_since_last_fill=_f("SMART_CLOSE_POST_FILL_COOLDOWN_SEC", 180.0),
@@ -73,6 +83,8 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 12.0),
         hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 22.0),
         scale_out_fraction=_f("SCALE_OUT_FRACTION", 0.5),
+        # Patch J: post-scale-out cooldown (env-tunable).
+        post_scale_out_cooldown_sec=_f("POST_SCALE_OUT_COOLDOWN_SEC", 60.0),
         min_position_age_sec=_f("SMART_CLOSE_MIN_POS_AGE_SEC", 90.0),
         imbalance_emergency_ratio=_f("IMBALANCE_EMERGENCY_RATIO", 4.0),
         imbalance_emergency_min_fills=int(_f("IMBALANCE_EMERGENCY_MIN_FILLS", 4)),
@@ -87,7 +99,15 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         tp_momentum_velocity_pct_per_min=_f("DYNAMIC_TP_MOMENTUM_VELOCITY_PCT_PER_MIN", 1.5),
         tp_momentum_extend_max_pct=_f("DYNAMIC_TP_MOMENTUM_EXTEND_MAX_PCT", 5.0),
         tp_momentum_trailing_giveback_pct=_f("DYNAMIC_TP_TRAILING_GIVEBACK_PCT", 0.5),
-        tp_min_fills=int(_f("DYNAMIC_TP_MIN_FILLS", 2)),
+        tp_min_fills=int(_f("DYNAMIC_TP_MIN_FILLS", 1)),
+        # Patch D: env hooks for piecewise TP step curve (3/2/1/0 default).
+        tp_step_curve_enabled=str(os.getenv("DYNAMIC_TP_STEP_CURVE", "true")).lower()
+        in ("1", "true", "yes", "on"),
+        tp_tier_1_min=_f("DYNAMIC_TP_TIER_1_MIN", 10.0),
+        tp_tier_2_min=_f("DYNAMIC_TP_TIER_2_MIN", 15.0),
+        tp_tier_3_min=_f("DYNAMIC_TP_TIER_3_MIN", 30.0),
+        tp_tier_2_pct=_f("DYNAMIC_TP_TIER_2_PCT", 2.0),
+        tp_tier_3_pct=_f("DYNAMIC_TP_TIER_3_PCT", 1.0),
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -324,7 +344,9 @@ class DryRunEngine:
                     self.state.position, self.state.imbalance, price,
                     fraction=self._smart_close.config.scale_out_fraction,
                 )
-                self._smart_close.reset_recovery()
+                # Patch G: do NOT reset_recovery() here — keep the window
+                # active so the remaining half can bounce instead of
+                # immediately retripping the floor and closing flat.
                 logger.warning(
                     f"⚖️  SCALE-OUT: closed {qty:.6f} @ ${price:.4f} | "
                     f"realised=${realised:.4f} | remaining qty={self.state.position.qty:.6f}"
@@ -379,9 +401,7 @@ class DryRunEngine:
             level.status = "placed"
         
         if self._adaptive:
-            self._adaptive.exposure_cap.exposure.buy_fills = 0
-            self._adaptive.exposure_cap.exposure.sell_fills = 0
-            self._adaptive.exposure_cap.exposure.consecutive_same_side = 0
+            self._adaptive.exposure_cap.reset()
         
         logger.info(
             f"🔄 GRID RESET for cycle {self._cycle_state.cycles_completed + 1}/{self._cycle_state.max_cycles} | "
@@ -459,6 +479,8 @@ class DryRunEngine:
         self.state.filled_levels.clear()
         self.state.recenter_count += 1
         self.state.last_recenter_at = time.time()
+        if self._adaptive:
+            self._adaptive.exposure_cap.reset()
         
         logger.info(f"🔄 RECENTERED | {len(new_levels)} levels | "
                     f"[{event.new_lower:.4f}-{event.new_upper:.4f}]")
@@ -476,6 +498,8 @@ class DryRunEngine:
         self.state.grid.upper_price += shift
         self.state.grid.lower_price += shift
         self.state.filled_levels.clear()
+        if self._adaptive:
+            self._adaptive.exposure_cap.reset()
         
         logger.info(f"📈 TRAILED | shift={shift:+.4f}")
 

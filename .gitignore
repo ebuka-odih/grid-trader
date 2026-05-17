@@ -16,6 +16,10 @@ dry_run.log
 agentic_run.log
 scanner_learning_state.json
 archive/
+PATCH_PLAN.md
+clean_wipe.py
+analysis/behavior_snapshots/
+analysis/live_db_copies/
 
 # Safety: backup/broken files
 *.bak*

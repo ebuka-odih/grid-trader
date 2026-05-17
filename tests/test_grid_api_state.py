@@ -1,6 +1,18 @@
 import unittest
 import asyncio
+import os
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
+
+sys.modules.setdefault(
+    "bcrypt",
+    SimpleNamespace(
+        checkpw=lambda provided, expected: False,
+        hashpw=lambda pw, salt: b"stubbed-bcrypt-hash",
+        gensalt=lambda rounds=12: b"stubbed-salt",
+    ),
+)
 
 import grid_api
 
@@ -94,7 +106,7 @@ class GridApiStateNormalizationTests(unittest.TestCase):
                 grid_api,
                 '_load_db_performance',
                 return_value=({'total_pnl': 1.0}, []),
-            ):
+            ), patch.object(grid_api, '_viewer_session', return_value={'role': 'viewer'}):
                 wallet = asyncio.run(grid_api.get_wallet())
 
             # Balance from state wallet (100.0), not initial + DB + realized
@@ -103,6 +115,50 @@ class GridApiStateNormalizationTests(unittest.TestCase):
             self.assertEqual(wallet['equity'], 100.2)
         finally:
             grid_api._state = original_state
+
+    def test_state_metadata_portfolio_caps_follow_live_env_over_stale_state(self):
+        original_state = grid_api._state
+        env_keys = [
+            'MAX_TOTAL_WALLET_EXPOSURE_PCT',
+            'PORTFOLIO_RESERVE_PCT',
+            'MAX_SINGLE_DIRECTION_EXPOSURE_PCT',
+            'MAX_TRADE_WALLET_EXPOSURE_PCT',
+            'EMERGENCY_LIQUIDATION_BUFFER_PCT',
+        ]
+        original_env = {key: os.environ.get(key) for key in env_keys}
+        try:
+            os.environ['MAX_TOTAL_WALLET_EXPOSURE_PCT'] = '82'
+            os.environ['PORTFOLIO_RESERVE_PCT'] = '18'
+            os.environ['MAX_SINGLE_DIRECTION_EXPOSURE_PCT'] = '47'
+            os.environ['MAX_TRADE_WALLET_EXPOSURE_PCT'] = '3.5'
+            os.environ['EMERGENCY_LIQUIDATION_BUFFER_PCT'] = '9'
+            grid_api._state = grid_api._coerce_state({
+                'portfolio': {
+                    'max_exposure_pct': 95.0,
+                    'reserved_pct': 5.0,
+                    'max_total_wallet_exposure_pct': 95.0,
+                    'max_single_direction_exposure_pct': 60.0,
+                    'max_trade_wallet_exposure_pct': 7.0,
+                    'emergency_liquidation_buffer_pct': 12.0,
+                }
+            })
+
+            with patch.object(grid_api, '_load_db_performance', return_value=({}, [])):
+                state = grid_api._state_with_metadata()
+
+            self.assertEqual(state['portfolio']['max_exposure_pct'], 82.0)
+            self.assertEqual(state['portfolio']['reserved_pct'], 18.0)
+            self.assertEqual(state['portfolio']['max_total_wallet_exposure_pct'], 82.0)
+            self.assertEqual(state['portfolio']['max_single_direction_exposure_pct'], 47.0)
+            self.assertEqual(state['portfolio']['max_trade_wallet_exposure_pct'], 3.5)
+            self.assertEqual(state['portfolio']['emergency_liquidation_buffer_pct'], 9.0)
+        finally:
+            grid_api._state = original_state
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == '__main__':

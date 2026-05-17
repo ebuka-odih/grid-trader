@@ -31,6 +31,6 @@ EXPOSE 8765
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8765/api/state 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('mode')=='running', 'manager not running'; assert d.get('started_at', 0) > 0, 'no start time'" || exit 1
+  CMD ["sh", "-c", "curl -fsS http://127.0.0.1:8765/api/state | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d.get('mode')=='running', 'manager not running'; assert d.get('started_at', 0) > 0, 'no start time'; age=d.get('state_age_seconds'); assert age is None or age < 120, f'stale state: {age}'\""]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker/entrypoint.sh"]

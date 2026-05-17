@@ -61,6 +61,7 @@ import sqlite3
 import logging
 import math
 import time
+import inspect
 import fcntl
 
 # Overlay runtime_config + decrypted secrets onto os.environ BEFORE any
@@ -93,6 +94,7 @@ from config import (
     PORTFOLIO_RESERVE_PCT, EMERGENCY_LIQUIDATION_BUFFER_PCT,
 
     RISK_CHECK_INTERVAL_SECONDS, MAX_SAFE_LEVERAGE, MIN_SAFE_LEVERAGE, MAX_TRADE_WALLET_EXPOSURE_PCT,
+    DEFAULT_LEVERAGE, clamp_leverage, resolve_profile_leverage,
     MIN_ORDER_SIZE_USDT,
 
     VOLATILITY_SCALE_ENABLED, VOLATILITY_SCALE_BASE_ATR,
@@ -220,17 +222,17 @@ HEARTBEAT_MAX_TICK_AGE_SECONDS = 300
 
 HEARTBEAT_DEPLOY_PAUSE_SECONDS = 10
 
-SCANNER_TOP_N = 60
+SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N_PORTFOLIO", "80"))
 
-MIN_FREE_SLOTS_TO_SCAN = 3
+MIN_FREE_SLOTS_TO_SCAN = int(os.getenv("MIN_FREE_SLOTS_TO_SCAN", "1"))
 
-NEW_GRID_DEPLOY_DELAY = 5
+NEW_GRID_DEPLOY_DELAY = int(os.getenv("NEW_GRID_DEPLOY_DELAY", "2"))
+
+MAX_DEPLOYMENTS_PER_CYCLE = int(os.getenv("MAX_DEPLOYMENTS_PER_CYCLE", "10"))
 
 MAX_GRIDS_PER_SYMBOL = int(os.getenv("MAX_GRIDS_PER_SYMBOL", "1"))
 MIN_INTERNAL_GRID_LEVELS = int(os.getenv("MIN_INTERNAL_GRID_LEVELS", "10"))
 MAX_INTERNAL_GRID_LEVELS = int(os.getenv("MAX_INTERNAL_GRID_LEVELS", "20"))
-MIN_DEPLOY_LEVERAGE = int(os.getenv("MIN_DEPLOY_LEVERAGE", str(MIN_SAFE_LEVERAGE)))
-MAX_DEPLOY_LEVERAGE = int(os.getenv("MAX_DEPLOY_LEVERAGE", str(MAX_SAFE_LEVERAGE)))
 MAX_TRADE_MARGIN_PCT = float(os.getenv("MAX_TRADE_WALLET_EXPOSURE_PCT", str(MAX_TRADE_WALLET_EXPOSURE_PCT)))
 MIN_GRID_ORDER_SIZE_USDT = float(os.getenv("MIN_ORDER_SIZE_USDT", str(MIN_ORDER_SIZE_USDT)))
 
@@ -240,6 +242,8 @@ LOSING_STAGNANT_TIMEOUT_SECONDS = int(os.getenv("LOSING_STAGNANT_TIMEOUT_SECONDS
 STAGNANT_GRID_TIMEOUT_SECONDS = int(os.getenv("STAGNANT_GRID_TIMEOUT_SECONDS", "2400"))  # 40m no meaningful progress
 MIN_PROGRESS_PRICE_MOVE_PCT = float(os.getenv("MIN_PROGRESS_PRICE_MOVE_PCT", "0.03"))
 MIN_PROGRESS_PNL_MOVE_USDT = float(os.getenv("MIN_PROGRESS_PNL_MOVE_USDT", "0.01"))
+LIVE_WALLET_SYNC_INTERVAL_SECONDS = float(os.getenv("LIVE_WALLET_SYNC_INTERVAL_SECONDS", "20"))
+LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY = float(os.getenv("LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY", "1.0"))
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -304,7 +308,88 @@ def symbol_has_grid_capacity(active_symbols, symbol: str, max_per_symbol: int = 
     return symbol_grid_count(active_symbols, symbol) < max_per_symbol
 
 
+def _candidate_market_regime(coin: CoinScore) -> str:
+    """Use scanner-computed regime when available, fallback to legacy heuristics."""
+    regime = str(getattr(coin, "market_regime", "") or "").strip()
+    if regime:
+        return regime
+    if coin.mean_reversion_score > 0.7:
+        return "ranging"
+    if coin.atr_pct > 2.5 or coin.range_pct > 6:
+        return "volatile"
+    return "ranging"
 
+
+def build_scanner_candidate_decision(
+    coin: CoinScore,
+    token_profile: dict | None = None,
+    wallet_balance: float | None = None,
+) -> PreTradeDecision:
+    """Build the same draft decision the algorithmic picker would create for a scanner score."""
+    token_profile = token_profile or {}
+    confidence = max(0.0, min(0.9, float(getattr(coin, "grid_score", 0.0) or 0.0)))
+    profile_leverage = resolve_profile_leverage(token_profile, fallback=coin.suggested_leverage or DEFAULT_LEVERAGE)
+    return PreTradeDecision(
+        symbol=coin.symbol,
+        direction=getattr(coin, "trend_direction", "neutral") or "neutral",
+        confidence=round(confidence, 2),
+        upper=coin.suggested_upper,
+        lower=coin.suggested_lower,
+        num_grids=normalize_grid_density(coin.suggested_grids, wallet_balance=wallet_balance),
+        leverage=profile_leverage,
+        reasoning=(
+            f"Scanner prefilter: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
+            f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
+        ),
+        market_regime=_candidate_market_regime(coin),
+        narrative=f"Prefilter draft for {coin.symbol}",
+    )
+
+
+def prefilter_scanner_candidates_for_deploy(
+    candidates: list[CoinScore],
+    token_profile_by_symbol: dict[str, dict] | None = None,
+    wallet_balance: float | None = None,
+    decision_supervisor: DecisionSupervisor | None = None,
+    active_symbols: list[str] | None = None,
+    max_active_per_symbol: int = MAX_GRIDS_PER_SYMBOL,
+) -> list[CoinScore]:
+    """Discard scanner candidates that would obviously fail the supervisor anyway."""
+    decision_supervisor = decision_supervisor or DecisionSupervisor()
+    token_profile_by_symbol = token_profile_by_symbol or {}
+    active_symbols = list(active_symbols or [])
+    deployable: list[CoinScore] = []
+
+    for coin in candidates:
+        token_profile = token_profile_by_symbol.get(coin.symbol, {})
+        draft_decision = build_scanner_candidate_decision(
+            coin,
+            token_profile=token_profile,
+            wallet_balance=wallet_balance,
+        )
+        review = decision_supervisor.review_pre_trade_decision(
+            decision=draft_decision,
+            coin_score=coin,
+            token_profile=token_profile,
+            active_symbols=active_symbols,
+            max_active_per_symbol=max_active_per_symbol,
+        )
+        if review.approved:
+            coin.suggested_lower = draft_decision.lower
+            coin.suggested_upper = draft_decision.upper
+            coin.suggested_grids = draft_decision.num_grids
+            coin.suggested_leverage = draft_decision.leverage
+            coin.market_regime = draft_decision.market_regime or coin.market_regime
+            coin.trend_direction = draft_decision.direction or coin.trend_direction
+            deployable.append(coin)
+        else:
+            logger.info(
+                "🚫 PREFILTER REJECT: %s | %s",
+                coin.symbol,
+                "; ".join(review.reasons),
+            )
+
+    return deployable
 
 
 # ── Data Structures ─────────────────────────────────────────────
@@ -349,6 +434,8 @@ class GridSlot:
 
     token_profile: dict = field(default_factory=dict)
 
+    coin_score: Optional[CoinScore] = None
+
     adjusted_leverage: int = 0
 
     adjusted_order_size: float = 0.0
@@ -387,7 +474,135 @@ def coin_score_to_dict(coin: CoinScore) -> dict:
 
         "suggested_grids": normalize_grid_density(coin.suggested_grids),
 
-        "suggested_leverage": max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(coin.suggested_leverage))),
+        "suggested_leverage": clamp_leverage(coin.suggested_leverage),
+
+        "trend_direction": coin.trend_direction,
+
+        "market_regime": coin.market_regime,
+
+        "entry_quality_score": coin.entry_quality_score,
+
+        "range_position": coin.range_position,
+
+        "vwap_distance_pct": coin.vwap_distance_pct,
+
+        "pullback_depth_pct": coin.pullback_depth_pct,
+
+        "slope_score": coin.slope_score,
+
+        "acceleration_score": coin.acceleration_score,
+
+        "entry_shape_template": coin.entry_shape_template,
+
+        "entry_shape_spacing": coin.entry_shape_spacing,
+
+        "entry_buy_density_bias": coin.entry_buy_density_bias,
+
+        "entry_sell_density_bias": coin.entry_sell_density_bias,
+
+        "entry_shape_notes": coin.entry_shape_notes,
+
+    }
+
+
+
+def _entry_shape_from_coin_score(coin_score: Optional[CoinScore]) -> dict:
+
+    """Extract entry-shape telemetry from a scanner score with stable defaults."""
+
+    if coin_score is None:
+
+        return {
+
+            "entry_quality_score": 0.0,
+
+            "entry_shape_template": "atr_box",
+
+            "entry_shape_spacing": "balanced",
+
+            "entry_buy_density_bias": 0.5,
+
+            "entry_sell_density_bias": 0.5,
+
+            "entry_shape_notes": "",
+
+        }
+
+    return {
+
+        "entry_quality_score": float(getattr(coin_score, "entry_quality_score", 0.0) or 0.0),
+
+        "entry_shape_template": getattr(coin_score, "entry_shape_template", "atr_box") or "atr_box",
+
+        "entry_shape_spacing": getattr(coin_score, "entry_shape_spacing", "balanced") or "balanced",
+
+        "entry_buy_density_bias": float(getattr(coin_score, "entry_buy_density_bias", 0.5) or 0.5),
+
+        "entry_sell_density_bias": float(getattr(coin_score, "entry_sell_density_bias", 0.5) or 0.5),
+
+        "entry_shape_notes": getattr(coin_score, "entry_shape_notes", "") or "",
+
+    }
+
+
+
+def _fill_danger_from_slot(slot: GridSlot) -> dict:
+
+    """Summarize same-side fill danger at close/export time."""
+
+    adaptive = getattr(getattr(slot, "engine", None), "_adaptive", None)
+
+    exposure_cap = getattr(adaptive, "exposure_cap", None)
+
+    exposure = getattr(exposure_cap, "exposure", None)
+
+    config = getattr(adaptive, "config", None)
+
+    consecutive_same_side = int(getattr(exposure, "consecutive_same_side", 0) or 0)
+
+    max_same_side_fills = int(getattr(config, "max_same_side_fills", 0) or 0)
+
+    if max_same_side_fills <= 0:
+
+        return {
+
+            "fill_danger": "low",
+
+            "fill_danger_score": 0.0,
+
+            "fill_danger_same_side_fills": consecutive_same_side,
+
+            "fill_danger_max_same_side_fills": max_same_side_fills,
+
+        }
+
+    score = min(1.0, max(0.0, consecutive_same_side / max_same_side_fills))
+
+    if score >= 1.0:
+
+        label = "critical"
+
+    elif score >= 0.8:
+
+        label = "high"
+
+    elif score >= 0.5:
+
+        label = "medium"
+
+    else:
+
+        label = "low"
+
+    return {
+
+        "fill_danger": label,
+
+        "fill_danger_score": round(score, 4),
+
+        "fill_danger_same_side_fills": consecutive_same_side,
+
+        "fill_danger_max_same_side_fills": max_same_side_fills,
 
     }
 
@@ -599,6 +814,7 @@ class MultiGridManager:
         )
 
         self.wallet_tracker = WalletTracker(initial_balance=INITIAL_WALLET_BALANCE)
+        self._last_live_wallet_sync = 0.0
 
 
 
@@ -615,7 +831,7 @@ class MultiGridManager:
 
         # Track recently-rejected symbols to avoid re-picking them every cycle
         self._recently_rejected: dict[str, float] = {}  # symbol -> rejection timestamp
-        self._rejection_cooldown = 300  # 5 minutes before retrying a rejected symbol
+        self._rejection_cooldown = int(os.getenv("REJECTION_COOLDOWN_SECONDS", "180"))
 
         # Cross-symbol drawdown-cluster gate: timestamps of recent close events
         # whose reason indicates a price-driven exit (drawdown / spike_close).
@@ -629,6 +845,7 @@ class MultiGridManager:
         self._risk_monitor_task: Optional[asyncio.Task] = None
 
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._manual_close_task: Optional[asyncio.Task] = None
 
 
 
@@ -748,6 +965,62 @@ class MultiGridManager:
         if total_pnl != 0.0:
             self.wallet_tracker.restore_realized_pnl(total_pnl)
 
+    @staticmethod
+    def _extract_live_wallet_from_balance(balance: dict) -> tuple[float, float | None, float | None]:
+        """Extract equity/available/used margin fields from a ccxt Bybit balance payload."""
+        total = balance.get("total") or {}
+        free = balance.get("free") or {}
+        used = balance.get("used") or {}
+
+        info = balance.get("info") or {}
+        result = info.get("result") or {}
+        rows = result.get("list") or []
+        row = rows[0] if rows and isinstance(rows[0], dict) else {}
+
+        def _f(value, default=None):
+            try:
+                if value is None or value == "":
+                    return default
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        equity = _f(row.get("totalEquity"))
+        if equity is None:
+            equity = _f(row.get("totalWalletBalance"))
+        if equity is None:
+            equity = _f(total.get("USDT"), 0.0)
+
+        available = _f(row.get("totalAvailableBalance"))
+        if available is None:
+            available = _f(free.get("USDT"))
+
+        margin_used = _f(row.get("totalInitialMargin"))
+        if margin_used is None:
+            margin_used = _f(used.get("USDT"))
+
+        return equity or 0.0, available, margin_used
+
+    async def _sync_live_wallet(self, *, force: bool = False):
+        """Refresh wallet tracker from exchange while in live mode."""
+        if DRY_RUN:
+            return
+        now = time.time()
+        if not force and (now - self._last_live_wallet_sync) < LIVE_WALLET_SYNC_INTERVAL_SECONDS:
+            return
+        try:
+            balance = await self.grid_calc.exchange.fetch_balance({"type": "swap"})
+            equity, available, margin_used = self._extract_live_wallet_from_balance(balance)
+            if equity > 0:
+                self.wallet_tracker.set_live_balance(
+                    equity=equity,
+                    available_margin=available,
+                    margin_used=margin_used,
+                )
+                self._last_live_wallet_sync = now
+        except Exception as exc:
+            logger.warning(f"Live wallet sync failed: {exc}")
+
 
 
     # ── Lifecycle ─────────────────────────────────────────────
@@ -788,17 +1061,21 @@ class MultiGridManager:
 
         logger.info(f"  Shared LLM client: ✓")
 
-        logger.info(f"  No real orders will be placed!")
+        logger.info(f"  Mode: {'DRY-RUN (simulated orders)' if DRY_RUN else 'LIVE (real orders)'}")
 
         logger.info("=" * 70)
 
 
 
-        if not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here":
+        if (not DRY_RUN) and (not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here"):
 
-            logger.error("❌ API keys not set!")
+            logger.error("❌ API keys not set for live mode!")
 
             return
+
+        if DRY_RUN and (not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here"):
+
+            logger.info("🧪 Dry-run mode without Bybit API keys — live trading is impossible")
 
 
 
@@ -822,6 +1099,7 @@ class MultiGridManager:
         # v4: Start execution WebSocket for live trading
         if not DRY_RUN:
             await self._start_execution_ws()
+            await self._sync_live_wallet(force=True)
 
 
 
@@ -834,6 +1112,14 @@ class MultiGridManager:
         # v2: Start risk monitor loop
 
         self._risk_monitor_task = asyncio.create_task(self._risk_monitor_loop())
+
+
+
+        # Patch B: orphan reaper — flatten any Bybit position the bot
+
+        # is not managing in a slot (catches WS-race orphans).
+
+        self._orphan_reaper_task = asyncio.create_task(self._orphan_reaper_loop())
 
 
 
@@ -850,6 +1136,7 @@ class MultiGridManager:
         # up with the freshly-overlaid runtime_config + secrets.
 
         self._restart_watcher_task = asyncio.create_task(self._restart_signal_watcher())
+        self._manual_close_task = asyncio.create_task(self._manual_close_request_watcher())
 
 
 
@@ -928,23 +1215,62 @@ class MultiGridManager:
         
         self._execution_task = asyncio.create_task(_execution_loop())
     
+    @staticmethod
+    def _normalize_ws_symbol(raw: str) -> str:
+        """Convert Bybit V5 raw symbol (e.g. "ORCAUSDT") to ccxt unified
+        ("ORCA/USDT:USDT"). If `raw` doesn't end in USDT we return it unchanged
+        (the registry lookup will then simply miss, which is fine)."""
+        if not raw:
+            return raw
+        if "/" in raw or ":" in raw:
+            return raw
+        for quote in ("USDT", "USDC", "USD"):
+            if raw.endswith(quote) and len(raw) > len(quote):
+                base = raw[: -len(quote)]
+                return f"{base}/{quote}:{quote}"
+        return raw
+
     async def _handle_execution(self, exec_data: dict):
         """Handle execution update from WebSocket."""
         symbol = exec_data.get("symbol", "")
-        order_id = exec_data.get("orderLinkId", "")
+        # Bybit V5 execution stream returns the venue order id under `orderId`.
+        # We previously read `orderLinkId`, which is the *client*-supplied id;
+        # we never set one when placing orders, so it was always empty and
+        # every fill failed to match a level → grids closed as
+        # `no_fills_timeout` while real positions accumulated on the exchange.
+        order_id = (
+            exec_data.get("orderId")
+            or exec_data.get("orderID")
+            or exec_data.get("orderLinkId")
+            or ""
+        )
         side = exec_data.get("side", "")
-        qty = float(exec_data.get("execQty", 0))
-        price = float(exec_data.get("execPrice", 0))
+        qty = float(exec_data.get("execQty", 0) or 0)
+        price = float(exec_data.get("execPrice", 0) or 0)
         exec_type = exec_data.get("execType", "")
-        
-        if exec_type not in ("Trade", "Funding"):
+
+        # Only forward actual trade fills (skip funding, settlement, etc.).
+        if exec_type and exec_type != "Trade":
             return
-        
-        # Find matching LiveEngine
+        if qty <= 0 or not order_id:
+            return
+
+        # Bybit V5 execution stream emits raw venue symbols (e.g. "ORCAUSDT");
+        # we register LiveEngines under ccxt-unified symbols (e.g. "ORCA/USDT:USDT").
+        # Try the raw symbol first, then a normalized variant.
         engine = self._live_engines.get(symbol)
-        if engine and hasattr(engine, 'notify_fill'):
+        if engine is None:
+            engine = self._live_engines.get(self._normalize_ws_symbol(symbol))
+        if engine and hasattr(engine, "notify_fill"):
             engine.notify_fill(order_id, side, qty, price)
-            logger.info(f"🔴 Execution routed: {symbol} {side} {qty} @ {price}")
+            logger.info(
+                f"🔴 Execution routed: {symbol} {side} {qty} @ {price} (order_id={order_id[:12]}…)"
+            )
+        else:
+            logger.warning(
+                f"⚠️ Execution unrouted: {symbol} {side} {qty} @ {price} "
+                f"(no LiveEngine registered for symbol; order_id={order_id[:12]}…)"
+            )
     
     def register_live_engine(self, symbol: str, engine):
         """Register a LiveEngine for execution routing."""
@@ -969,7 +1295,13 @@ class MultiGridManager:
             except asyncio.CancelledError:
                 pass
 
-        for task in [getattr(self, "_broadcaster_task", None), getattr(self, "_risk_monitor_task", None), getattr(self, "_heartbeat_task", None)]:
+        for task in [
+            getattr(self, "_broadcaster_task", None),
+            getattr(self, "_risk_monitor_task", None),
+            getattr(self, "_heartbeat_task", None),
+            getattr(self, "_restart_watcher_task", None),
+            getattr(self, "_manual_close_task", None),
+        ]:
 
             if task and not task.done():
 
@@ -1006,6 +1338,8 @@ class MultiGridManager:
                     direction=slot.decision.direction,
                     adjusted_leverage=slot.adjusted_leverage,
                     adjusted_order_size=slot.adjusted_order_size,
+                    fill_danger=_fill_danger_from_slot(slot)["fill_danger"],
+                    fill_danger_score=_fill_danger_from_slot(slot)["fill_danger_score"],
                 )
                 self._total_trades += 1
                 self._total_pnl += total_pnl
@@ -1072,6 +1406,7 @@ class MultiGridManager:
         while self._running:
 
             await asyncio.sleep(RISK_CHECK_INTERVAL_SECONDS)
+            await self._sync_live_wallet()
 
             if not self.slots:
 
@@ -1120,7 +1455,7 @@ class MultiGridManager:
 
                     order_size_usdt=slot.adjusted_order_size or profile.get("order_size_usdt", 5.0),
 
-                    leverage=slot.adjusted_leverage or profile.get("leverage", 10),
+                    leverage=slot.adjusted_leverage or resolve_profile_leverage(profile, fallback=DEFAULT_LEVERAGE),
 
                     unrealized_pnl=status.get("total_pnl", 0),
 
@@ -1137,6 +1472,8 @@ class MultiGridManager:
     async def _deployment_cycle(self):
 
         """Check for free slots and deploy new grids if available."""
+
+        await self._sync_live_wallet()
 
         free_slots = self.max_grids - len(self.slots)
 
@@ -1159,6 +1496,15 @@ class MultiGridManager:
 
 
         logger.info(f"\n🔄 Deployment cycle | active={len(self.slots)}/{self.max_grids} | free={free_slots}")
+
+        if not DRY_RUN:
+            wallet_state = self.wallet_tracker.get_wallet_state()
+            if wallet_state.get("available_margin", 0.0) < LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY:
+                logger.warning(
+                    "⏸️ Live deployment paused: available margin too low "
+                    f"(${wallet_state.get('available_margin', 0.0):.4f})"
+                )
+                return
 
 
 
@@ -1206,13 +1552,29 @@ class MultiGridManager:
 
             return
 
+        wallet_balance = self.wallet_tracker.get_balance()
+        token_profile_by_symbol = {
+            coin.symbol: self.risk_monitor.get_token_profile(coin.symbol)
+            for coin in available[:SCANNER_TOP_N]
+        }
+        available = prefilter_scanner_candidates_for_deploy(
+            available,
+            token_profile_by_symbol=token_profile_by_symbol,
+            wallet_balance=wallet_balance,
+            decision_supervisor=self.decision_supervisor,
+            active_symbols=active_symbols,
+            max_active_per_symbol=MAX_GRIDS_PER_SYMBOL,
+        )
 
+        if not available:
+
+            logger.info("📊 All scanner candidates were prefiltered by supervisor rules before selection")
+
+            return
 
         # Pick coins algorithmically using scanner scores + diversification
 
-        num_to_pick = min(free_slots, len(available), 10)
-
-        wallet_balance = self.wallet_tracker.get_balance()
+        num_to_pick = min(free_slots, len(available), MAX_DEPLOYMENTS_PER_CYCLE)
 
         picks = self._select_coins_algorithmically(available[:SCANNER_TOP_N], num_to_pick, wallet_balance)
 
@@ -1387,19 +1749,24 @@ class MultiGridManager:
 
             # Deploy with adjusted params
 
-            await self._deploy_grid(
+            try:
+                await self._deploy_grid(
 
-                coin_score, decision,
+                    coin_score, decision,
 
-                token_profile=token_profile,
+                    token_profile=token_profile,
 
-                adjusted_leverage=risk_result["adjusted_leverage"],
+                    adjusted_leverage=risk_result["adjusted_leverage"],
 
-                adjusted_order_size=adjusted_order_size,
+                    adjusted_order_size=adjusted_order_size,
 
-            )
+                )
 
-            active_symbols.append(decision.symbol)
+                active_symbols.append(decision.symbol)
+            except Exception as exc:
+                logger.warning(f"🛡️ {decision.symbol} DEPLOY FAILED: {exc}")
+                self._recently_rejected[decision.symbol] = time.time()
+                continue
 
 
 
@@ -1454,39 +1821,19 @@ class MultiGridManager:
 
             # Get token profile for direction bias and params
             profile = self.risk_monitor.get_token_profile(coin.symbol)
-            profile_leverage = max(MIN_DEPLOY_LEVERAGE, min(MAX_DEPLOY_LEVERAGE, int(profile.get("leverage", DEFAULT_LEVERAGE))))
             profile_order_size = profile.get("order_size_usdt", 5.0)
 
-            # Determine market regime from mean reversion + range
-            if coin.mean_reversion_score > 0.7:
-                regime = "ranging"
-            elif coin.atr_pct > 2.5:
-                regime = "volatile"
-            elif coin.range_pct > 6:
-                regime = "volatile"
-            else:
-                regime = "ranging"
-
-            # Direction: use dynamic trend_direction from scanner OHLCV analysis.
-            # Grid trading profits from oscillation — neutral is the default.
-            # Only apply directional bias when scanner detects a clear trend
-            # AND mean reversion is weak (coin is trending, not ranging).
-            direction = coin.trend_direction
-
-            # Confidence based on composite score
-            confidence = min(0.9, score)
-
-            decision = PreTradeDecision(
-                symbol=coin.symbol,
-                direction=direction,
-                confidence=round(confidence, 2),
-                upper=coin.suggested_upper,
-                lower=coin.suggested_lower,
-                num_grids=normalize_grid_density(coin.suggested_grids, wallet_balance=wallet_balance),
-                leverage=profile_leverage,
-                reasoning=f"Algorithmic pick: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M",
-                market_regime=regime,
-                narrative=f"{sector} sector, {regime} regime, {coin.atr_pct:.1f}% ATR",
+            decision = build_scanner_candidate_decision(
+                coin,
+                token_profile=profile,
+                wallet_balance=wallet_balance,
+            )
+            decision.reasoning = (
+                f"Algorithmic pick: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
+                f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
+            )
+            decision.narrative = (
+                f"{sector} sector, {decision.market_regime} regime, {coin.atr_pct:.1f}% ATR"
             )
             picks.append(decision)
             sector_counts[sector] = current_count + 1
@@ -1495,7 +1842,7 @@ class MultiGridManager:
                 f"📊 ALGO PICK: {decision.symbol} | dir={decision.direction} | "
                 f"sector={sector} | score={coin.grid_score:.3f} | "
                 f"mr={coin.mean_reversion_score:.2f} | trend={coin.trend_direction} | "
-                f"regime={regime} | conf={confidence:.2f} | "
+                f"regime={decision.market_regime} | conf={decision.confidence:.2f} | "
                 f"grid={decision.lower:.4f}-{decision.upper:.4f} | "
                 f"grids={decision.num_grids} | lev={decision.leverage}x"
             )
@@ -1550,7 +1897,7 @@ class MultiGridManager:
 
 
 
-        # Deploy biased grid using risk-adjusted order size so actual grid quantities
+        # Deploy a symmetric two-sided grid using risk-adjusted order size so actual grid quantities
 
         # match the portfolio risk monitor and wallet tracker.
 
@@ -1580,9 +1927,9 @@ class MultiGridManager:
             engine = DryRunEngine(adaptive_config=adaptive_cfg)
         else:
             from live_engine import LiveEngine
-            engine = LiveEngine(alerter=self.alerter)
+            engine = LiveEngine(adaptive_config=adaptive_cfg, alerter=self.alerter)
         
-        state = await self._deploy_biased_grid(
+        state = await self._deploy_symmetric_grid(
 
             engine,
 
@@ -1620,6 +1967,18 @@ class MultiGridManager:
 
             adjusted_order_size=final_order_size,
 
+            entry_shape_template=coin_score.entry_shape_template,
+
+            entry_shape_spacing=coin_score.entry_shape_spacing,
+
+            entry_shape_confidence=coin_score.entry_quality_score,
+
+            entry_buy_density_bias=coin_score.entry_buy_density_bias,
+
+            entry_sell_density_bias=coin_score.entry_sell_density_bias,
+
+            entry_shape_notes=coin_score.entry_shape_notes,
+
         )
 
 
@@ -1641,6 +2000,8 @@ class MultiGridManager:
             started_at=time.time(),
 
             token_profile=token_profile,
+
+            coin_score=coin_score,
 
             adjusted_leverage=adjusted_leverage or decision.leverage,
 
@@ -1725,7 +2086,7 @@ class MultiGridManager:
 
 
 
-    async def _deploy_biased_grid(
+    async def _deploy_symmetric_grid(
 
         self,
 
@@ -1738,7 +2099,7 @@ class MultiGridManager:
         order_size_usdt: float = BASE_ORDER_SIZE_USDT,
 
     ):
-        """Deploy a direction-biased grid to an isolated engine."""
+        """Deploy a symmetric two-sided grid to an isolated engine."""
 
         grid = self.grid_calc.calculate_grid_levels(
 
@@ -1759,72 +2120,10 @@ class MultiGridManager:
         )
 
 
-
-        # Apply direction bias
-
-        if direction in ("long", "short"):
-
-            price = coin_score.price
-
-            levels_below = [l for l in grid.grid_levels if l.price < price]
-
-            levels_above = [l for l in grid.grid_levels if l.price >= price]
-
-
-
-            if direction == "long":
-
-                for lvl in levels_below:
-
-                    lvl.side = "Buy"
-
-                sell_count = max(1, len(levels_above) // 3)
-
-                for i, lvl in enumerate(levels_above):
-
-                    lvl.side = "Sell" if i >= len(levels_above) - sell_count else "Buy"
-
-            elif direction == "short":
-
-                for lvl in levels_above:
-
-                    lvl.side = "Sell"
-
-                buy_count = max(1, len(levels_below) // 3)
-
-                for i, lvl in enumerate(levels_below):
-
-                    lvl.side = "Buy" if i < buy_count else "Sell"
-
-
-
-            # ── Option C: asymmetric qty on the averaging-down side ──
-            # Scale down qty on the side that adds to a losing position when
-            # price moves against the bias. For 'long' bias, that's the deep
-            # Buy ladder below current price — reducing that qty caps how
-            # much we average-down into a falling-knife scenario.
-            # `bias_avg_down_qty_factor` is configurable via env (default 0.5).
-            try:
-                qty_factor = float(os.getenv("BIAS_AVG_DOWN_QTY_FACTOR", "0.5"))
-            except (TypeError, ValueError):
-                qty_factor = 0.5
-            qty_factor = max(0.1, min(1.0, qty_factor))
-
-            if direction == "long":
-                # Reduce Buy-side qty on levels below price (averaging-down).
-                for lvl in grid.grid_levels:
-                    if lvl.side == "Buy" and lvl.price < price:
-                        lvl.qty = round(lvl.qty * qty_factor, 6)
-            elif direction == "short":
-                # Reduce Sell-side qty on levels above price (averaging-up).
-                for lvl in grid.grid_levels:
-                    if lvl.side == "Sell" and lvl.price > price:
-                        lvl.qty = round(lvl.qty * qty_factor, 6)
-
-            logger.info(
-                f"📐 ASYMMETRIC GRID ({direction}): {coin_score.symbol} | "
-                f"avg-down qty x{qty_factor:.2f}"
-            )
+        logger.info(
+            f"📐 TWO-SIDED GRID ({direction} signal): {coin_score.symbol} | "
+            f"preserving symmetric buy-below / sell-above ladder"
+        )
 
 
 
@@ -1850,6 +2149,9 @@ class MultiGridManager:
                 logger.error(f"Failed to set leverage: {e}")
             
             # Place limit orders
+            placed_levels = 0
+            failed_levels = 0
+            first_error: str | None = None
             for level in grid.grid_levels:
                 try:
                     order = await grid_engine.exchange.create_limit_order(
@@ -1860,11 +2162,34 @@ class MultiGridManager:
                     )
                     level.order_id = order["id"]
                     level.status = "placed"
+                    placed_levels += 1
                     logger.info(f"  ✅ {level.side} {level.qty} @ {level.price:.4f} → {order['id']}")
                 except Exception as e:
                     level.status = "failed"
+                    failed_levels += 1
+                    if first_error is None:
+                        first_error = str(e)
                     logger.error(f"  ❌ {level.side} {level.qty} @ {level.price:.4f} → {e}")
-            
+
+            if failed_levels > 0 or placed_levels == 0:
+                if placed_levels > 0:
+                    try:
+                        await grid_engine.cancel_grid(grid)
+                    except Exception as cancel_exc:
+                        logger.error(f"Failed to rollback partial live grid {grid.symbol}: {cancel_exc}")
+                raise RuntimeError(
+                    f"live order placement incomplete for {grid.symbol}: "
+                    f"placed={placed_levels}/{len(grid.grid_levels)} "
+                    f"failed={failed_levels} first_error={first_error or 'unknown'}"
+                )
+
+            # CRITICAL: hand the manager's GridEngine + Adaptive grid into the
+            # LiveEngine so its _flatten_and_cancel / _reset_grid_for_next_cycle
+            # / scale-out paths can call close_position / cancel_grid /
+            # exchange.create_limit_order. Without these the LiveEngine crashes
+            # on every TP close with `'NoneType' has no attribute close_position`
+            # and the position is left orphaned on the exchange.
+            engine._grid_engine = grid_engine
             engine.state = state
         else:
             # DryRunEngine — create DryRunState (simulated)
@@ -1907,9 +2232,9 @@ class MultiGridManager:
 
             return "no_fills_timeout"
 
-        if total_pnl < 0 and seconds_since_progress >= LOSING_STAGNANT_TIMEOUT_SECONDS:
+        if total_pnl < 0:
 
-            return "losing_stagnant"
+            return None
 
         if seconds_since_progress >= STAGNANT_GRID_TIMEOUT_SECONDS:
 
@@ -1967,6 +2292,8 @@ class MultiGridManager:
                     fills_before = len(slot.state.fills) if hasattr(slot.state, 'fills') else 0
 
                     event = slot.engine.on_price_update(price)
+                    if inspect.isawaitable(event):
+                        event = await event
                     
                     # Record new fills to DB
                     fills_after = len(slot.state.fills) if hasattr(slot.state, 'fills') else 0
@@ -2070,19 +2397,7 @@ class MultiGridManager:
                     hard_max_min = float(os.getenv("GRID_HARD_MAX_MINUTES", "240"))
                     age_min = (now - start) / 60
 
-                    if (
-                        stale_reason == "losing_stagnant"
-                        and loss_pct_margin > 1.0
-                        and age_min < hard_max_min
-                    ):
-                        # Let smart-close handle it.
-                        if int(age_min) % 5 == 0:
-                            logger.warning(
-                                f"🧹 [#{slot.slot_id}] Stagnation close deferred — "
-                                f"loss={loss_pct_margin:.1f}% margin (age={age_min:.0f}m). "
-                                f"Smart close will manage exit."
-                            )
-                    else:
+                    if stale_reason is not None:
                         logger.warning(
 
                             f"🧹 [#{slot.slot_id}] Closing stagnant grid | reason={stale_reason} | "
@@ -2168,13 +2483,11 @@ class MultiGridManager:
                             mid_decision = MidTradeDecision(action="hold", reasoning="no agent")
 
                         if mid_decision.action == "close":
-
-                            logger.info(f"🤖 [#{slot.slot_id}] Agent says CLOSE! {mid_decision.reasoning}")
-
-                            close_reason = "agent_close"
-
-                            break
-
+                            logger.info(
+                                f"🤖 [#{slot.slot_id}] Agent requested close but was ignored; "
+                                f"smart-close / engine exit rules are the only close authority. "
+                                f"{mid_decision.reasoning}"
+                            )
                         elif mid_decision.action != "hold":
 
                             logger.info(
@@ -2276,7 +2589,27 @@ class MultiGridManager:
     async def _on_grid_closed(self, slot: GridSlot, close_reason: str):
 
         """Handle a grid closing — record results, update wallet, free the slot."""
-        
+
+        # Patch N: ensure the live position is actually flattened on the
+        # exchange BEFORE we tear down local state. Previously, manager-
+        # initiated close paths (timeout, transient_error, cancelled,
+        # price_bus_error) skipped LiveEngine._flatten_and_cancel entirely
+        # because that method is only called from the engine's own tick
+        # loop. Result: bot freed the slot, reset local PnL, and left the
+        # real position open on Bybit until the orphan reaper picked it
+        # up 60-180s later — exactly the "trades on Bybit but not on UI"
+        # symptom. Always call _flatten_and_cancel here in live mode.
+        if not DRY_RUN and getattr(slot, "engine", None):
+            try:
+                # _flatten_and_cancel is idempotent; safe even if the
+                # engine already flattened via _handle_close.
+                await slot.engine._flatten_and_cancel(close_reason)
+            except Exception as e:
+                logger.error(
+                    f"❌ [#{slot.slot_id}] _on_grid_closed: explicit flatten failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+
         # v4: Unregister LiveEngine if it was live
         if not DRY_RUN:
             self.unregister_live_engine(slot.symbol)
@@ -2318,6 +2651,8 @@ class MultiGridManager:
 
         try:
 
+            fill_danger = _fill_danger_from_slot(slot)
+
             self.journal.record_cycle_close(
 
                 grid_id=slot.state.grid.grid_id,
@@ -2343,6 +2678,10 @@ class MultiGridManager:
                 adjusted_leverage=slot.adjusted_leverage,
 
                 adjusted_order_size=slot.adjusted_order_size,
+
+                fill_danger=fill_danger["fill_danger"],
+
+                fill_danger_score=fill_danger["fill_danger_score"],
 
             )
 
@@ -2557,6 +2896,18 @@ class MultiGridManager:
 
         self.slots.pop(slot.slot_id, None)
 
+        # Patch B: remember this symbol so the orphan reaper doesn't
+
+        # flatten the very position we're trying to close on the next tick
+
+        # (reduce-only market orders can take a few seconds to settle).
+
+        if not hasattr(self, "_recently_closed_symbols"):
+
+            self._recently_closed_symbols = {}
+
+        self._recently_closed_symbols[slot.symbol] = time.time()
+
 
 
         logger.info(f"🔓 Slot #{slot.slot_id} freed | Active grids: {len(self.slots)}/{self.max_grids}")
@@ -2600,8 +2951,74 @@ class MultiGridManager:
             except Exception as exc:
                 logger.warning(f"restart_signal_watcher error: {exc}")
 
+    def _manual_close_requests_file(self):
+        from runtime_config import DATA_DIR
+        return DATA_DIR / "manual_close_requests.jsonl"
 
-    # ── Portfolio Status Broadcaster ──────────────────────────
+    async def _manual_close_request_watcher(self):
+        """Poll for manual close requests written by the API process."""
+        requests_file = self._manual_close_requests_file()
+        while self._running:
+            try:
+                await asyncio.sleep(2)
+                if not requests_file.exists() or requests_file.stat().st_size <= 0:
+                    continue
+                processing = requests_file.with_suffix(f".processing.{os.getpid()}.jsonl")
+                try:
+                    requests_file.replace(processing)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
+
+                try:
+                    for raw in processing.read_text(encoding="utf-8").splitlines():
+                        if not raw.strip():
+                            continue
+                        try:
+                            payload = json.loads(raw)
+                        except Exception as exc:
+                            logger.warning(f"manual close watcher bad payload: {exc}")
+                            continue
+                        await self._handle_manual_close_request(payload)
+                finally:
+                    try:
+                        processing.unlink()
+                    except FileNotFoundError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"manual_close_request_watcher error: {exc}")
+
+    async def _handle_manual_close_request(self, payload: dict):
+        slot_id = int(payload.get("slot_id") or 0)
+        reason = str(payload.get("reason") or "manual_close")
+        slot = self.slots.get(slot_id)
+        if not slot:
+            logger.warning(f"manual close requested for missing slot #{slot_id}")
+            return
+        if slot.close_reason:
+            logger.info(f"manual close ignored for slot #{slot_id}; already closing as {slot.close_reason}")
+            return
+
+        slot.close_reason = reason
+        try:
+            slot.state.is_active = False
+        except Exception:
+            pass
+
+        logger.warning(f"🧨 Manual close requested for slot #{slot_id} {slot.symbol} | reason={reason}")
+        self._push_api_state()
+
+        if slot.task and not slot.task.done():
+            slot.task.cancel()
+            return
+
+        await self._on_grid_closed(slot, reason)
+
+
+    # ── Portfolio Status Broadcaster ─────────────────────────-
 
 
 
@@ -2618,6 +3035,118 @@ class MultiGridManager:
                 continue
 
             self._log_portfolio_status()
+
+    # ── Patch B: orphan reaper ──────────────────────────────────────────
+    # Periodically audit Bybit-side positions vs locally tracked slots
+    # and reduce-only market-close any position the bot doesn't manage.
+    # Catches WS-race orphans, partial-fill leftovers, and any position
+    # that lingers past a slot's lifecycle.
+    async def _orphan_reaper_loop(self):
+        """Every ORPHAN_REAPER_INTERVAL seconds, flatten Bybit positions
+        with no managing slot. Idempotent — silent when there are none."""
+        interval = float(os.getenv("ORPHAN_REAPER_INTERVAL_SEC", "60"))
+        # Grace period: don't reap a symbol whose slot was just closed
+        # (the periodic scan can race with cleanup). Symbol → unix ts.
+        recent_close_grace_sec = float(
+            os.getenv("ORPHAN_REAPER_GRACE_SEC", "120")
+        )
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                if not self.grid_calc or not getattr(self.grid_calc, "exchange", None):
+                    continue
+                # Build set of symbols the bot currently manages.
+                tracked = {slot.symbol for slot in self.slots.values()}
+                # Also include symbols closed within the grace window —
+                # their reduce-only close may not have settled yet.
+                grace = getattr(self, "_recently_closed_symbols", {})
+                now = time.time()
+                tracked.update(
+                    sym for sym, ts in grace.items()
+                    if now - ts < recent_close_grace_sec
+                )
+                # Fetch all positions in one call (faster than per-symbol).
+                try:
+                    positions = await self.grid_calc.exchange.fetch_positions()
+                except Exception as e:
+                    logger.debug(f"orphan_reaper: fetch_positions failed: {e}")
+                    continue
+                orphans = []
+                for p in positions:
+                    sym = p.get("symbol")
+                    qty_raw = p.get("contracts")
+                    if not sym or qty_raw is None:
+                        continue
+                    try:
+                        qty = abs(float(qty_raw))
+                    except (TypeError, ValueError):
+                        continue
+                    if qty <= 0:
+                        continue
+                    if sym in tracked:
+                        continue
+                    orphans.append((sym, p.get("side"), qty))
+                if not orphans:
+                    continue
+                logger.warning(
+                    f"🧹 ORPHAN REAPER: {len(orphans)} unmanaged Bybit positions; flattening"
+                )
+                for sym, pside, qty in orphans:
+                    market_side = "sell" if pside == "long" else "buy"
+                    placed = await self._reap_one(sym, pside, qty, market_side)
+                    if placed:
+                        oid = placed.get("id") if isinstance(placed, dict) else "?"
+                        logger.warning(
+                            f"  🧹 reaped {sym} {pside} {qty} → {market_side.upper()} reduceOnly id={oid}"
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"orphan_reaper_loop: unexpected error: {e}")
+
+    async def _reap_one(self, sym: str, pside: str, qty: float, market_side: str):
+        """Try to reduce-only-close one orphan position. On Bybit's
+        retCode 110007 ("ab not enough for new order") — which fires when
+        free margin is too low to validate even a reduce-only order — we
+        first cancel any open orders for that symbol to free margin, then
+        retry. Returns the order dict on success, None on failure (logs
+        the failure)."""
+        ex = self.grid_calc.exchange
+        params = {"reduceOnly": True, "category": "linear"}
+        for attempt in range(3):
+            try:
+                return await ex.create_market_order(sym, market_side, qty, params=params)
+            except Exception as e:
+                msg = str(e)
+                is_insufficient = "110007" in msg or "ab not enough" in msg.lower()
+                if is_insufficient and attempt < 2:
+                    # Cancel all open orders for this symbol — they hold
+                    # margin/order-quota that prevents the close from
+                    # being accepted. Then retry the reduce-only close.
+                    try:
+                        await ex.cancel_all_orders(sym, params={"category": "linear"})
+                        logger.warning(
+                            f"  🧹 reaper: cancelled open orders on {sym} to free "
+                            f"margin (110007 attempt {attempt+1})"
+                        )
+                    except Exception as ce:
+                        logger.warning(
+                            f"  🧹 reaper: cancel_all_orders failed on {sym}: "
+                            f"{type(ce).__name__}: {ce}"
+                        )
+                    # Try the next attempt with the same qty; if Bybit
+                    # still refuses, fall back to halving on attempt 3.
+                    if attempt == 1:
+                        qty = round(qty * 0.5, 8) or qty
+                    continue
+                logger.error(
+                    f"  ❌ orphan_reaper failed for {sym}: {type(e).__name__}: {e}"
+                )
+                return None
+        logger.error(
+            f"  ❌ orphan_reaper exhausted retries for {sym} qty={qty}"
+        )
+        return None
 
 
 
@@ -2744,6 +3273,8 @@ def _serialize_slots(slots: dict) -> dict:
     for slot_id, slot in slots.items():
         status = slot.engine.get_status()
         grid_id = slot.state.grid.grid_id if slot.state else None
+        entry_shape = _entry_shape_from_coin_score(getattr(slot, "coin_score", None))
+        fill_danger = _fill_danger_from_slot(slot)
         result[str(slot_id)] = {
             "slot_id": slot.slot_id,
             "grid_id": grid_id,
@@ -2766,11 +3297,24 @@ def _serialize_slots(slots: dict) -> dict:
             "grid_id": grid_id,
             "upper_price": slot.state.grid.upper_price if slot.state else None,
             "lower_price": slot.state.grid.lower_price if slot.state else None,
-        "num_grids": slot.state.grid.num_grids if slot.state else None,
-        "fill_log": status.get("fill_log", []),
-        "grid_levels": status.get("grid_levels", []),
-        "allocated_margin_usdt": status.get("allocated_margin_usdt", 0),
-    }
+            "num_grids": slot.state.grid.num_grids if slot.state else None,
+            "fill_log": status.get("fill_log", []),
+            "grid_levels": status.get("grid_levels", []),
+            "allocated_margin_usdt": status.get("allocated_margin_usdt", 0),
+            "target_pnl_low": status.get("target_pnl_low"),
+            "target_pnl_high": status.get("target_pnl_high"),
+            "target_pnl_pct_low": status.get("target_pnl_pct_low"),
+            "target_pnl_pct_high": status.get("target_pnl_pct_high"),
+            "max_drawdown_pct": status.get("max_drawdown_pct"),
+            "duration_sec": status.get("duration_sec"),
+            "filled_levels": status.get("filled_levels", 0),
+            "position_qty": status.get("position_qty", 0),
+            "position_side": status.get("position_side"),
+            "entry_price": status.get("entry_price"),
+            "imbalance_ratio": status.get("imbalance_ratio", 0),
+            **entry_shape,
+            **fill_danger,
+        }
     return result
 
 

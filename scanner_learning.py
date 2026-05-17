@@ -55,7 +55,7 @@ class AdjustedCandidate:
 class ScannerLearning:
     """Score modifier for adaptive market scanning."""
 
-    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "agent_close", "emergency", "exposure_breach", "grid_imbalance"}
+    FAILURE_REASONS = {"timeout", "drawdown", "spike_close", "emergency", "exposure_breach", "grid_imbalance"}
     # Imbalance soft-blacklist: count grid_imbalance closes in a rolling
     # window per symbol; trip a longer cooldown if the count crosses
     # threshold. Tunable via env without code changes.

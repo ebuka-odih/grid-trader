@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from dry_run_engine import DryRunEngine, DryRunState
-from grid_core import GridPosition
+from grid_core import GridPosition, SmartCloseConfig
 from grid_engine import GridLevel, GridState
 from heartbeat_regulator import HeartbeatRegulator
 from multi_grid_manager import MultiGridManager, LOSING_STAGNANT_TIMEOUT_SECONDS, STAGNANT_GRID_TIMEOUT_SECONDS
@@ -43,7 +43,7 @@ def status(**overrides):
 
 
 class NoNegativePositionCloseTests(unittest.TestCase):
-    def test_stagnation_closes_filled_negative_position_after_timeout(self):
+    def test_stagnation_does_not_close_filled_negative_position_after_timeout(self):
         manager = MultiGridManager.__new__(MultiGridManager)
 
         losing_reason = manager._stagnation_close_reason(
@@ -53,7 +53,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             seconds_since_progress=max(LOSING_STAGNANT_TIMEOUT_SECONDS, STAGNANT_GRID_TIMEOUT_SECONDS) + 1,
         )
 
-        self.assertEqual(losing_reason, "losing_stagnant")
+        self.assertIsNone(losing_reason)
 
     def test_stagnation_can_close_profitable_or_empty_slots(self):
         manager = MultiGridManager.__new__(MultiGridManager)
@@ -94,7 +94,12 @@ class NoNegativePositionCloseTests(unittest.TestCase):
         self.assertGreater(decision.net_pnl, 0)
 
     def test_dry_run_drawdown_closes_losing_position(self):
-        engine = DryRunEngine()
+        engine = DryRunEngine(
+            smart_close_config=SmartCloseConfig(
+                recovery_window_sec=0.0,
+                post_scale_out_cooldown_sec=0.0,
+            )
+        )
         grid = GridState(
             symbol="TEST/USDT:USDT",
             upper_price=110.0,
@@ -115,6 +120,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             current_price=100.0,
             position=pos,
             is_active=True,
+            filled_levels={0, 1},
         )
 
         # Margin-based hard floor + scale-out: first breach halves the
@@ -131,7 +137,12 @@ class NoNegativePositionCloseTests(unittest.TestCase):
         self.assertLess(engine.state.position.realized_pnl, 0)
 
     def test_dry_run_drawdown_closes_before_hold_warning(self):
-        engine = DryRunEngine()
+        engine = DryRunEngine(
+            smart_close_config=SmartCloseConfig(
+                recovery_window_sec=0.0,
+                post_scale_out_cooldown_sec=0.0,
+            )
+        )
         grid = GridState(
             symbol="TEST/USDT:USDT",
             upper_price=110.0,
@@ -152,6 +163,7 @@ class NoNegativePositionCloseTests(unittest.TestCase):
             current_price=100.0,
             position=pos,
             is_active=True,
+            filled_levels={0, 1},
         )
 
         # First deep-drawdown tick scales out half (kept alive for recovery).

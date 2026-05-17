@@ -7,7 +7,15 @@ import logging
 import os
 from typing import Optional
 
-from config import MIN_SAFE_LEVERAGE, MAX_SAFE_LEVERAGE, MAX_TRADE_WALLET_EXPOSURE_PCT, MIN_ORDER_SIZE_USDT
+from config import (
+    DEFAULT_LEVERAGE,
+    MAX_SAFE_LEVERAGE,
+    MAX_TRADE_WALLET_EXPOSURE_PCT,
+    MIN_ORDER_SIZE_USDT,
+    clamp_leverage,
+    resolve_profile_leverage,
+    resolve_profile_max_leverage,
+)
 
 logger = logging.getLogger("portfolio_risk_monitor")
 
@@ -57,8 +65,8 @@ class PortfolioRiskMonitor:
     def get_token_profile(self, symbol: str) -> dict:
         base = symbol.split("/")[0]
         profile = dict(self.profiles.get(symbol) or self.profiles.get(base) or self.defaults)
-        profile["leverage"] = max(MIN_SAFE_LEVERAGE, min(MAX_SAFE_LEVERAGE, int(profile.get("leverage", MAX_SAFE_LEVERAGE))))
-        profile["max_leverage"] = max(MIN_SAFE_LEVERAGE, min(MAX_SAFE_LEVERAGE, int(profile.get("max_leverage", MAX_SAFE_LEVERAGE))))
+        profile["max_leverage"] = resolve_profile_max_leverage(profile)
+        profile["leverage"] = resolve_profile_leverage(profile, fallback=DEFAULT_LEVERAGE)
         profile["max_wallet_exposure_pct"] = min(
             float(profile.get("max_wallet_exposure_pct", MAX_TRADE_WALLET_EXPOSURE_PCT)),
             MAX_TRADE_WALLET_EXPOSURE_PCT,
@@ -88,8 +96,7 @@ class PortfolioRiskMonitor:
                     "reasons": [f"{symbol} is blacklisted"], "warnings": []}
 
         # Adjusted leverage
-        max_allowed = max(MIN_SAFE_LEVERAGE, min(leverage, MAX_SAFE_LEVERAGE))
-        adjusted_leverage = max(MIN_SAFE_LEVERAGE, min(leverage, max_allowed))
+        adjusted_leverage = clamp_leverage(leverage, maximum=resolve_profile_max_leverage(profile))
         adjusted_order_size = order_size_usdt
 
         level_count = self.RESERVE_BUFFER_LEVELS + 1  # reserve for new grid: buffer + 1 initial fill

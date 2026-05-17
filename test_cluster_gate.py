@@ -102,7 +102,7 @@ def test_spike_close_also_counts():
 def test_irrelevant_reasons_ignored():
     m = FakeManager()
     base = 1_000_000.0
-    for r in ["target_hit", "timeout", "no_fills_timeout", "agent_close"]:
+    for r in ["target_hit", "timeout", "no_fills_timeout", "manual_close"]:
         m.record(r, base)
     assert not m.pause_extends, "non-cluster reasons must not arm the gate"
 

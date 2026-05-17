@@ -1,26 +1,18 @@
 """
-Admin API for grid-trader.
+Admin + dashboard access API for grid-trader.
 
-Authenticates against ADMIN_PASSWORD_HASH (bcrypt hash in .env), issues
-bearer tokens with TTL, exposes endpoints to read tunables/schema and
-write tunables + encrypted secrets, and supports an Apply (graceful
-container exit so docker-compose restarts with the new config).
+Authenticates against bcrypt hashes in env, issues bearer tokens with TTL,
+exposes admin endpoints to read/write runtime config + encrypted secrets, and
+exposes viewer access endpoints for tenant-scoped dashboard sessions.
 
-To bootstrap a password, run:
+Environment variables:
+  - ADMIN_PASSWORD_HASH : bcrypt hash for admin login
+  - VIEWER_PIN_HASH     : bcrypt hash for read-only dashboard viewer login
+  - DASHBOARD_TENANT_ID : single allowed tenant id for dashboard sessions
+
+To bootstrap a password or viewer PIN, run:
     python admin.py hash-password
-and paste the printed line into .env, then restart the container.
-
-Routes (all under /api/admin):
-  POST /login            { password } -> { token, expires_at }
-  GET  /settings         -> { schema, values, secret_status }
-  PUT  /settings         { values } -> { ok, applied_keys }
-  PUT  /secrets          { values } -> { ok, masked }
-  POST /apply            -> kicks the manager exit; api stays up briefly
-  GET  /status           -> { authed, has_admin_password, secret_keys_set }
-
-Auth is a bearer token in the Authorization header. Tokens are stored in
-process memory only (lost on restart, which is fine — the user logs in
-again from the UI).
+and paste the printed hash into .env.
 """
 
 from __future__ import annotations
@@ -30,7 +22,6 @@ import logging
 import os
 import secrets
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt
@@ -47,69 +38,164 @@ from runtime_config import (
     TUNABLE_FIELDS,
     encrypt_secrets,
     _decrypt_secrets,
+    _load_runtime_config,
 )
 
 logger = logging.getLogger("admin")
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+access_router = APIRouter(prefix="/api/access", tags=["access"])
 
-# Token lifetime: 8h. Stored in-memory; lost on restart by design.
 TOKEN_TTL_SECONDS = 8 * 3600
-_tokens: dict[str, float] = {}  # token -> expires_at
+ROLE_RANK = {"viewer": 1, "admin": 2}
+_tokens: dict[str, dict[str, Any]] = {}
 
 
 # ── Auth helpers ─────────────────────────────────────────────────────────
 
 def _admin_password_hash() -> str:
-    """Return the bcrypt hash from env. Empty string disables admin entirely."""
     return os.environ.get("ADMIN_PASSWORD_HASH", "") or ""
 
 
-def _verify_password(provided: str) -> bool:
-    """Verify a plaintext password against the stored bcrypt hash.
+def _viewer_pin_hash() -> str:
+    return os.environ.get("VIEWER_PIN_HASH", "") or ""
 
-    bcrypt.checkpw is constant-time relative to the hash, defeating
-    timing side-channels. Returns False if no hash is configured (admin
-    disabled) or the hash is malformed.
-    """
-    expected = _admin_password_hash()
-    if not expected or not provided:
+
+def dashboard_tenant() -> str:
+    tenant = (os.environ.get("DASHBOARD_TENANT_ID", "default") or "default").strip()
+    return tenant or "default"
+
+
+def auth_required() -> bool:
+    """Whether read-only dashboard endpoints require a viewer session."""
+    return bool(_viewer_pin_hash())
+
+
+def _verify_hash_value(provided: str, expected_hash: str) -> bool:
+    if not expected_hash or not provided:
         return False
     try:
-        return bcrypt.checkpw(provided.encode("utf-8"), expected.encode("utf-8"))
+        return bcrypt.checkpw(provided.encode("utf-8"), expected_hash.encode("utf-8"))
     except (ValueError, TypeError):
-        # Malformed hash (e.g. user pasted the plaintext password by mistake)
         return False
 
 
-def _issue_token() -> tuple[str, float]:
+def _verify_password(provided: str) -> bool:
+    return _verify_hash_value(provided, _admin_password_hash())
+
+
+def _verify_viewer_pin(provided: str) -> bool:
+    return _verify_hash_value(provided, _viewer_pin_hash())
+
+
+def _normalize_tenant(requested: Optional[str]) -> str:
+    requested_value = (requested or dashboard_tenant()).strip() or dashboard_tenant()
+    configured = dashboard_tenant()
+    if requested_value != configured:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tenant mismatch: dashboard is scoped to {configured}",
+        )
+    return configured
+
+
+def _issue_token(role: str, tenant: Optional[str] = None) -> tuple[str, float]:
+    tenant_id = _normalize_tenant(tenant)
     token = secrets.token_urlsafe(32)
     expires_at = time.time() + TOKEN_TTL_SECONDS
-    _tokens[token] = expires_at
-    # Sweep expired tokens opportunistically
+    _tokens[token] = {
+        "role": role,
+        "tenant": tenant_id,
+        "issued_at": time.time(),
+        "expires_at": expires_at,
+    }
     now = time.time()
-    for t, exp in list(_tokens.items()):
-        if exp < now:
+    for t, session in list(_tokens.items()):
+        if float(session.get("expires_at", 0)) < now:
             _tokens.pop(t, None)
     return token, expires_at
 
 
-def _require_token(authorization: Optional[str]) -> None:
+def _extract_bearer_token(authorization: Optional[str]) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     token = authorization[len("Bearer "):].strip()
-    expires_at = _tokens.get(token)
-    if expires_at is None:
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    return token
+
+
+def _resolve_session(token: str) -> dict[str, Any]:
+    session = _tokens.get(token)
+    if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    if expires_at < time.time():
+    if float(session.get("expires_at", 0)) < time.time():
         _tokens.pop(token, None)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    return session
+
+
+def require_access(
+    authorization: Optional[str],
+    *,
+    required_role: str = "viewer",
+    tenant: Optional[str] = None,
+    allow_public_if_disabled: bool = True,
+) -> dict[str, Any]:
+    requested_tenant = _normalize_tenant(tenant)
+    if allow_public_if_disabled and not auth_required():
+        return {
+            "role": "public",
+            "tenant": requested_tenant,
+            "issued_at": None,
+            "expires_at": None,
+        }
+
+    token = _extract_bearer_token(authorization)
+    session = _resolve_session(token)
+    session_role = str(session.get("role") or "viewer")
+    if ROLE_RANK.get(session_role, 0) < ROLE_RANK.get(required_role, 0):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient access level")
+    if session.get("tenant") != requested_tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token not valid for requested tenant")
+    return session
+
+
+def require_viewer_access(authorization: Optional[str], tenant: Optional[str] = None) -> dict[str, Any]:
+    return require_access(authorization, required_role="viewer", tenant=tenant, allow_public_if_disabled=True)
+
+
+def require_admin_access(authorization: Optional[str], tenant: Optional[str] = None) -> dict[str, Any]:
+    if not _admin_password_hash():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Admin access is disabled")
+    return require_access(authorization, required_role="admin", tenant=tenant, allow_public_if_disabled=False)
+
+
+def build_access_context(session: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    effective = session or {
+        "role": "public" if not auth_required() else None,
+        "tenant": dashboard_tenant(),
+        "expires_at": None,
+    }
+    return {
+        "auth_required": auth_required(),
+        "dashboard_mode": "tenant_scoped" if auth_required() else "public",
+        "role": effective.get("role"),
+        "tenant": effective.get("tenant", dashboard_tenant()),
+        "expires_at": effective.get("expires_at"),
+    }
 
 
 # ── Models ───────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     password: str
+    tenant: Optional[str] = None
+
+
+class ViewerLoginRequest(BaseModel):
+    pin: str
+    tenant: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -124,54 +210,100 @@ class SecretsUpdate(BaseModel):
 
 @router.get("/status")
 def status_endpoint() -> dict:
-    """Pre-login status. Tells the UI whether admin is even available
-    (ADMIN_PASSWORD_HASH set?) and which secrets are currently configured."""
     has_hash = bool(_admin_password_hash())
-    # Probe which secrets currently have values in env (post-overlay).
     secret_keys_set = []
     for key in SECRET_FIELDS:
         if os.environ.get(key):
             secret_keys_set.append(key)
     return {
-        "has_admin_password": has_hash,  # name kept for UI compat
+        "has_admin_password": has_hash,
+        "has_viewer_pin": bool(_viewer_pin_hash()),
+        "auth_required": auth_required(),
+        "dashboard_tenant": dashboard_tenant(),
         "secret_keys_set": secret_keys_set,
+    }
+
+
+@access_router.get("/status")
+def access_status_endpoint() -> dict:
+    return {
+        "auth_required": auth_required(),
+        "has_admin_password": bool(_admin_password_hash()),
+        "has_viewer_pin": bool(_viewer_pin_hash()),
+        "dashboard_tenant": dashboard_tenant(),
+        "dashboard_mode": "tenant_scoped" if auth_required() else "public",
     }
 
 
 @router.post("/login")
 def login_endpoint(req: LoginRequest) -> dict:
     if not _verify_password(req.password):
-        # Generic message — don't disclose whether the password env var is set
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
-    token, expires_at = _issue_token()
-    return {"token": token, "expires_at": expires_at}
+    token, expires_at = _issue_token("admin", tenant=req.tenant)
+    return {
+        "token": token,
+        "expires_at": expires_at,
+        "role": "admin",
+        "tenant": dashboard_tenant(),
+    }
+
+
+@access_router.post("/viewer-login")
+def viewer_login_endpoint(req: ViewerLoginRequest) -> dict:
+    if not _viewer_pin_hash():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Viewer access is disabled")
+    if not _verify_viewer_pin(req.pin):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
+    token, expires_at = _issue_token("viewer", tenant=req.tenant)
+    return {
+        "token": token,
+        "expires_at": expires_at,
+        "role": "viewer",
+        "tenant": dashboard_tenant(),
+    }
+
+
+@access_router.get("/session")
+def access_session_endpoint(authorization: Optional[str] = Header(None)) -> dict:
+    session = require_viewer_access(authorization)
+    return build_access_context(session)
 
 
 # ── Settings (tunables) ──────────────────────────────────────────────────
 
+def _typed_value(raw: Any, key: str, default: Any) -> Any:
+    spec = TUNABLE_FIELDS[key]
+    if raw is None:
+        return default
+    if spec.type == "int":
+        try:
+            return int(float(raw))
+        except Exception:
+            return default
+    if spec.type == "float":
+        try:
+            return float(raw)
+        except Exception:
+            return default
+    if spec.type == "bool":
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return str(raw)
+
+
 @router.get("/settings")
 def get_settings(authorization: Optional[str] = Header(None)) -> dict:
-    _require_token(authorization)
+    require_admin_access(authorization)
     schema = {key: spec.as_dict() for key, spec in TUNABLE_FIELDS.items()}
-    # Effective values come from env (which has had the overlay applied).
+    saved_overrides = _load_runtime_config()
     values: dict[str, Any] = {}
     for key, spec in TUNABLE_FIELDS.items():
-        raw = os.environ.get(key)
-        if raw is None:
-            values[key] = spec.default
+        if key in saved_overrides:
+            values[key] = _typed_value(saved_overrides.get(key), key, spec.default)
             continue
-        if spec.type == "int":
-            try: values[key] = int(float(raw))
-            except: values[key] = spec.default
-        elif spec.type == "float":
-            try: values[key] = float(raw)
-            except: values[key] = spec.default
-        elif spec.type == "bool":
-            values[key] = str(raw).strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            values[key] = raw
+        values[key] = _typed_value(os.environ.get(key), key, spec.default)
 
-    # Secret display: mask all but last 4 chars.
     secret_status: dict[str, dict] = {}
     for key, spec in SECRET_FIELDS.items():
         raw = os.environ.get(key, "")
@@ -187,6 +319,7 @@ def get_settings(authorization: Optional[str] = Header(None)) -> dict:
         "values": values,
         "secret_schema": {key: spec.as_dict() for key, spec in SECRET_FIELDS.items()},
         "secret_status": secret_status,
+        "access": build_access_context({"role": "admin", "tenant": dashboard_tenant(), "expires_at": None}),
     }
 
 
@@ -223,15 +356,34 @@ def _validate_value(key: str, value: Any) -> Any:
 
 @router.put("/settings")
 def put_settings(req: SettingsUpdate, authorization: Optional[str] = Header(None)) -> dict:
-    _require_token(authorization)
-    # Validate every key first; persist atomically (write tmp, then rename).
+    require_admin_access(authorization)
     cleaned: dict[str, Any] = {}
     for key, value in req.values.items():
         cleaned[key] = _validate_value(key, value)
 
+    merged = dict(_load_runtime_config())
+    merged.update(cleaned)
+    min_safe = int(merged.get("MIN_SAFE_LEVERAGE", merged.get("MIN_DEPLOY_LEVERAGE", TUNABLE_FIELDS["MIN_SAFE_LEVERAGE"].default)))
+    max_safe = int(merged.get("MAX_SAFE_LEVERAGE", merged.get("MAX_DEPLOY_LEVERAGE", TUNABLE_FIELDS["MAX_SAFE_LEVERAGE"].default)))
+    min_deploy = int(merged.get("MIN_DEPLOY_LEVERAGE", min_safe))
+    max_deploy = int(merged.get("MAX_DEPLOY_LEVERAGE", max_safe))
+    if max_safe < min_safe:
+        raise HTTPException(status_code=400, detail="MAX_SAFE_LEVERAGE must be >= MIN_SAFE_LEVERAGE")
+    if max_deploy < min_deploy:
+        raise HTTPException(status_code=400, detail="MAX_DEPLOY_LEVERAGE must be >= MIN_DEPLOY_LEVERAGE")
+    if max_deploy > max_safe:
+        raise HTTPException(status_code=400, detail="MAX_DEPLOY_LEVERAGE must be <= MAX_SAFE_LEVERAGE")
+    if min_deploy < min_safe:
+        raise HTTPException(status_code=400, detail="MIN_DEPLOY_LEVERAGE must be >= MIN_SAFE_LEVERAGE")
+
+    merged["MIN_SAFE_LEVERAGE"] = min_safe
+    merged["MAX_SAFE_LEVERAGE"] = max_safe
+    merged["MIN_DEPLOY_LEVERAGE"] = min_safe
+    merged["MAX_DEPLOY_LEVERAGE"] = max_safe
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = RUNTIME_CONFIG_PATH.with_suffix(".tmp")
-    payload = {"version": 1, "updated_at": time.time(), "values": cleaned}
+    payload = {"version": 1, "updated_at": time.time(), "values": merged}
     tmp_path.write_text(json.dumps(payload, indent=2))
     os.replace(tmp_path, RUNTIME_CONFIG_PATH)
     logger.info(f"runtime_config updated: {sorted(cleaned.keys())}")
@@ -242,18 +394,13 @@ def put_settings(req: SettingsUpdate, authorization: Optional[str] = Header(None
 
 @router.put("/secrets")
 def put_secrets(req: SecretsUpdate, authorization: Optional[str] = Header(None)) -> dict:
-    _require_token(authorization)
-
-    # Merge with existing decrypted secrets so the caller can update one
-    # field without losing the others. Encryption uses /data/secrets.key,
-    # not the admin password — see runtime_config.py.
+    require_admin_access(authorization)
     existing = _decrypt_secrets()
     merged = dict(existing)
     for key, value in req.values.items():
         if key not in SECRET_FIELDS:
             raise HTTPException(status_code=400, detail=f"Unknown secret: {key}")
         if value is None or value == "":
-            # Treat empty string as "unset"
             merged.pop(key, None)
         else:
             merged[key] = str(value)
@@ -287,18 +434,7 @@ def put_secrets(req: SecretsUpdate, authorization: Optional[str] = Header(None))
 
 @router.post("/apply")
 def apply_endpoint(authorization: Optional[str] = Header(None)) -> dict:
-    _require_token(authorization)
-    """
-    Trigger a graceful container exit. Docker compose's restart=unless-stopped
-    brings the container back up, at which point runtime_config + secrets are
-    re-applied via the runtime_config.apply_overlay() call at module-import
-    time.
-
-    Implementation: we don't kill the api process itself (the response would
-    never be returned). Instead we touch a sentinel file that the manager
-    process polls; multi_grid_manager exits on detection, which the
-    entrypoint's child-watch translates into a container exit.
-    """
+    require_admin_access(authorization)
     sentinel = DATA_DIR / "restart.signal"
     sentinel.write_text(str(time.time()))
     logger.warning(f"apply requested — restart sentinel written: {sentinel}")
@@ -307,30 +443,65 @@ def apply_endpoint(authorization: Optional[str] = Header(None)) -> dict:
 
 # ── CLI helper: bcrypt hash a password for .env ─────────────────────────
 
-def _hash_password_cli() -> int:
-    """Read a password from stdin (no echo), print the bcrypt hash line."""
+def _hash_password_cli(password: Optional[str] = None, confirm: Optional[str] = None) -> int:
+    import sys
     import getpass
-    pw = getpass.getpass("Password: ")
+
+    pw = password
+    pw2 = confirm
+
+    if pw is None:
+        if sys.stdin.isatty():
+            pw = getpass.getpass("Password/PIN: ")
+            pw2 = getpass.getpass("Confirm: ")
+        else:
+            piped = sys.stdin.read().splitlines()
+            if len(piped) >= 2:
+                pw, pw2 = piped[0], piped[1]
+            elif len(piped) == 1:
+                pw, pw2 = piped[0], piped[0]
+            else:
+                env_pw = os.environ.get("ADMIN_PASSWORD")
+                if env_pw is None:
+                    print("Non-interactive mode detected but no password input found.")
+                    print("Use one of:")
+                    print("  1) printf '%s\n%s\n' 'your-pass' 'your-pass' | docker exec -i <container> python admin.py hash-password")
+                    print("  2) docker exec -e ADMIN_PASSWORD='your-pass' <container> python admin.py hash-password")
+                    print("  3) docker exec <container> python admin.py hash-password --password 'your-pass'")
+                    return 2
+                pw = env_pw
+                pw2 = os.environ.get("ADMIN_PASSWORD_CONFIRM", env_pw)
+    elif pw2 is None:
+        pw2 = pw
+
     if not pw:
         print("Empty password, aborting.")
         return 1
-    pw2 = getpass.getpass("Confirm: ")
     if pw != pw2:
         print("Passwords don't match, aborting.")
         return 1
     h = bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
     print()
-    print("Add the following line to .env (and remove any old ADMIN_PASSWORD line):")
+    print("Add the following line to .env:")
     print()
     print(f"ADMIN_PASSWORD_HASH={h}")
+    print("# or VIEWER_PIN_HASH=<same hash if you want viewer PIN auth>")
     print()
-    print("Then restart the container: docker compose up -d --force-recreate")
+    print("Then recreate/restart the service so the new hash is loaded.")
     return 0
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
     if len(sys.argv) > 1 and sys.argv[1] in ("hash-password", "hash"):
-        sys.exit(_hash_password_cli())
+        parser = argparse.ArgumentParser(
+            prog=f"python {sys.argv[0]} hash-password",
+            description="Generate bcrypt hash for ADMIN_PASSWORD_HASH or VIEWER_PIN_HASH",
+        )
+        parser.add_argument("--password", help="Password/PIN (for non-interactive usage)")
+        parser.add_argument("--confirm", help="Confirmation (optional; defaults to --password)")
+        args = parser.parse_args(sys.argv[2:])
+        sys.exit(_hash_password_cli(password=args.password, confirm=args.confirm))
     print(f"Usage: python {sys.argv[0]} hash-password")
     sys.exit(2)

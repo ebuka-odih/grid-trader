@@ -40,8 +40,18 @@ class GridPosition:
     
     @property
     def age_seconds(self) -> float:
-        if self.opened_at <= 0:
+        # Flat positions are always age 0.
+        if self.is_flat:
             return 0.0
+        # If we hold a real position but lost the open timestamp (e.g. the
+        # exchange-sync path raced ahead of the WS fill, or we restarted
+        # while a position was already open), DON'T pretend the position
+        # is brand new — that permanently disables both the
+        # ``min_position_age_sec`` guard and the emergency-imbalance
+        # bypass and lets losses run. Treat a missing timestamp as "old
+        # enough for any age-based exit to fire".
+        if self.opened_at <= 0:
+            return 1e9
         return time.time() - self.opened_at
     
     @property
@@ -191,20 +201,23 @@ class SmartCloseConfig:
     # interpretation became unreachable at high leverage (50× → 1% price
     # = 50% margin, so the old 5% price floor only fired at 250% margin).
 
-    # Time-based decay
-    time_decay_enabled: bool = True
-    time_decay_hours: float = 8.0        # Close if negative for this long
-    time_decay_min_loss_pct: float = 5.0 # Min margin-loss % to trigger time decay
+    # Legacy bias-era negative-exit heuristics. These are disabled by default
+    # because a two-sided edge grid should not realize losses simply for being
+    # underwater, trending briefly, or filling asymmetrically. Real safety exits
+    # are handled by the hard floor / drawdown path below.
+    time_decay_enabled: bool = False
+    time_decay_hours: float = 8.0
+    time_decay_min_loss_pct: float = 5.0
     
     # Momentum-based exit
-    momentum_exit_enabled: bool = True
-    momentum_window_sec: float = 60.0    # Look at last 60s of price movement
-    momentum_threshold_pct: float = 2.0  # 2% move in window = trend acceleration
+    momentum_exit_enabled: bool = False
+    momentum_window_sec: float = 60.0
+    momentum_threshold_pct: float = 2.0
     
     # Grid imbalance
-    imbalance_close_enabled: bool = True
-    imbalance_ratio_threshold: float = 3.0  # 3:1 buy:sell = close losers
-    imbalance_min_fills: int = 6             # Need at least 6 fills before checking
+    imbalance_close_enabled: bool = False
+    imbalance_ratio_threshold: float = 3.0
+    imbalance_min_fills: int = 6
 
     # ── Emergency imbalance bypass ───────────────────────────────
     # When the grid is filling rapidly in one direction *and* the position
@@ -225,15 +238,15 @@ class SmartCloseConfig:
     imbalance_emergency_min_age_sec: float = 60.0
     
     # Trailing stop on underwater positions (margin-%)
-    trailing_stop_enabled: bool = True
-    trailing_stop_initial_pct: float = 18.0  # Initial stop at -18% margin
-    trailing_stop_tighten_hours: float = 4.0 # After 4 hours, tighten
-    trailing_stop_tightened_pct: float = 12.0 # Tightened stop at -12% margin
+    trailing_stop_enabled: bool = False
+    trailing_stop_initial_pct: float = 18.0
+    trailing_stop_tighten_hours: float = 4.0
+    trailing_stop_tightened_pct: float = 12.0
 
     # Recovery probability (learned from data) — margin-%
-    recovery_check_enabled: bool = True
-    recovery_min_depth_pct: float = 8.0  # Only check if >8% margin underwater
-    recovery_max_hours: float = 6.0      # If >6 hours at this depth, unlikely to recover
+    recovery_check_enabled: bool = False
+    recovery_min_depth_pct: float = 8.0
+    recovery_max_hours: float = 6.0
 
     # ── Minimum position age ─────────────────────────────────
     # No close (not even hard floor) can fire on a position younger than
@@ -270,9 +283,16 @@ class SmartCloseConfig:
 
     # ── Scale-out at hard floor ─────────────────────────────────
     # On first floor breach, close `scale_out_fraction` of the position and
-    # reset the recovery window. If the remainder breaches again, full close.
+    # let the recovery window engage on the remaining half. If the floor
+    # is breached again AFTER the post-scale-out cooldown AND the recovery
+    # window has either expired or refused to open, close the remainder.
     # Set scale_out_fraction=1.0 to disable scale-out (single-shot close).
     scale_out_fraction: float = 0.5
+    # Patch J: cooldown after a scale-out before the floor/imbalance
+    # bypass can trip again. Without this, the very next tick (300ms
+    # later) re-tripped the floor and closed the remainder before the
+    # recovery window could engage. 60s lets the halved position breathe.
+    post_scale_out_cooldown_sec: float = 60.0
 
     # ── Dynamic take-profit ────────────────────────────────────
     # The TP target shrinks with position age (so old positions don't sit
@@ -283,12 +303,21 @@ class SmartCloseConfig:
     tp_decay_step_pct: float = 2.0               # Target the curve drops to right after full_target_min
     tp_decay_to_zero_at_min: float = 60.0        # Above this, any positive closes
     tp_dust_floor_usdt: float = 0.05             # Minimum $ PnL to honour late close
+    # Patch D: piecewise step TP curve (overrides linear decay when enabled).
+    # Default mirrors user spec: 3% in first 10 min, 2% from 10-15 min,
+    # 1% from 15-30 min, break-even (0%) past 30 min.
+    tp_step_curve_enabled: bool = True
+    tp_tier_1_min: float = 10.0   # End of "young" tier (target = tp_floor_pct)
+    tp_tier_2_min: float = 15.0   # End of mid tier (target = tp_tier_2_pct)
+    tp_tier_3_min: float = 30.0   # End of late tier (target = tp_tier_3_pct)
+    tp_tier_2_pct: float = 2.0
+    tp_tier_3_pct: float = 1.0    # Past tier_3_min → 0 (break-even)
     tp_momentum_enabled: bool = True
     tp_momentum_max_age_min: float = 30.0        # Above this, no extension
     tp_momentum_velocity_pct_per_min: float = 1.5
     tp_momentum_extend_max_pct: float = 5.0      # Hard cap on extended target
     tp_momentum_trailing_giveback_pct: float = 0.5  # Lock-in giveback above floor
-    tp_min_fills: int = 2
+    tp_min_fills: int = 1
 
 
 class SmartCloseEngine:
@@ -310,13 +339,19 @@ class SmartCloseEngine:
         self._recovery_state: Dict[str, Dict[str, float]] = {}
         # side -> highest pnl_pct seen during the current open position
         self._tp_peak_pct: Dict[str, float] = {}
+        # Patch J: side -> timestamp of last scale-out, to enforce a
+        # post-scale-out cooldown before the hard-floor / imbalance-bypass
+        # can trip the close-remainder branch.
+        self._scaled_out_at: Dict[str, float] = {}
 
     def reset_recovery(self, side: str = ""):
         """Drop recovery tracking for a side (or all if empty)."""
         if side:
             self._recovery_state.pop(side, None)
+            self._scaled_out_at.pop(side, None)
         else:
             self._recovery_state.clear()
+            self._scaled_out_at.clear()
 
     def reset_tp_peak(self, side: str = ""):
         """Drop dynamic-TP peak tracking for a side (or all if empty)."""
@@ -390,7 +425,19 @@ class SmartCloseEngine:
         #    Below full_target_min: full floor target (e.g. 3%).
         #    At full_target_min the curve steps down to `decay_step_pct` (2%)
         #    and ramps linearly to 0 by `decay_to_zero_at_min`.
-        if age_min <= cfg.tp_min_age_full_target_min:
+        if cfg.tp_step_curve_enabled:
+            # Patch D: piecewise step curve. Defaults express the user's
+            # intent: 3% in the first 10 min, 2% from 10-15, 1% from
+            # 15-30, break-even past 30. Each breakpoint is env-tunable.
+            if age_min <= cfg.tp_tier_1_min:
+                time_target_pct = cfg.tp_floor_pct
+            elif age_min <= cfg.tp_tier_2_min:
+                time_target_pct = cfg.tp_tier_2_pct
+            elif age_min <= cfg.tp_tier_3_min:
+                time_target_pct = cfg.tp_tier_3_pct
+            else:
+                time_target_pct = 0.0
+        elif age_min <= cfg.tp_min_age_full_target_min:
             time_target_pct = cfg.tp_floor_pct
         elif age_min >= cfg.tp_decay_to_zero_at_min:
             time_target_pct = 0.0
@@ -574,17 +621,25 @@ class SmartCloseEngine:
         # Track depth over time
         self._track_depth(position.side, loss_pct)
 
-        # ── Emergency imbalance bypass (FIRST — bypasses both min-age AND floor) ──
-        # Catches sustained directional fills before the hard floor at 15%.
-        # Two new guards keep it from firing on candle events:
-        #   - loss_pct >= imbalance_emergency_min_loss_pct (default 8%) so
-        #     small-bleed bursts get to recover via freeze + smart-close.
-        #   - position.age_seconds >= imbalance_emergency_min_age_sec
-        #     (default 60s) so a 4-fill candle inside one minute can't
-        #     trip the bypass.
-        # Below those thresholds the freeze (max_same_side_fills) pauses
-        # new fills, the hard floor (15-30% margin, ATR-bucketed) is the
-        # real safety net, and scale-out at the floor halves before close.
+        # Pre-compute the active hard floor. Emergency imbalance is allowed to
+        # *arm* the hard-floor path, but not to realize a loss on its own below
+        # the same floor. Same-side fill skew is a freeze / caution signal; the
+        # actual loss-taking path remains the hard floor + scale-out chain.
+        if atr_pct > 0:
+            floor_pct = compute_atr_bucketed_floor(
+                atr_pct,
+                base_pct=self.config.hard_loss_pct_floor,
+                min_pct=self.config.hard_loss_pct_floor_min,
+                max_pct=self.config.hard_loss_pct_floor_max,
+            )
+        else:
+            floor_pct = self.config.hard_loss_pct_floor
+
+        # ── Emergency imbalance guardrail (no direct pre-floor close) ──
+        # A strong one-sided fill cluster is evidence of trend pressure, but it
+        # should not by itself force a red close before the hard floor. Below the
+        # floor we freeze/fallback to recovery logic; at/above the floor, the
+        # ordinary hard-floor branch below owns the scale-out / final-close flow.
         meets_size = (
             self.config.imbalance_close_enabled
             and total_fills >= self.config.imbalance_emergency_min_fills
@@ -594,29 +649,14 @@ class SmartCloseEngine:
         if meets_size:
             meets_loss = loss_pct >= self.config.imbalance_emergency_min_loss_pct
             meets_age = position.age_seconds >= self.config.imbalance_emergency_min_age_sec
-            if meets_loss and meets_age:
-                self._recovery_state.pop(position.side, None)
-                # First bypass hit: scale out half, give the rest a chance
-                # via the recovery window. Second hit (already scaled_out)
-                # closes the remainder. Mirrors the hard-floor pattern at
-                # line 648 below and roughly halves avg_loss on bypass
-                # closures vs the previous immediate-close behaviour.
-                if not position.scaled_out and self.config.scale_out_fraction < 1.0:
-                    logger.warning(
-                        f"⚡ EMERGENCY IMBALANCE ({position.side}): "
-                        f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
-                        f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s — "
-                        f"scaling out {self.config.scale_out_fraction*100:.0f}% "
-                        f"(first hit, recovery window opens)"
-                    )
-                    return CloseReason.PARTIAL_CLOSE
+            meets_floor = loss_pct >= floor_pct
+            if meets_loss and meets_age and meets_floor:
                 logger.warning(
-                    f"⚡ EMERGENCY IMBALANCE ({position.side}): "
+                    f"⚠️ IMBALANCE armed HARD FLOOR ({position.side}): "
                     f"ratio={imbalance.imbalance_ratio:.1f}:1, fills={total_fills}, "
-                    f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s — "
-                    f"closing remainder (already scaled out)"
+                    f"loss={loss_pct:.2f}%, age={position.age_seconds:.0f}s, "
+                    f"floor={floor_pct:.2f}% — deferring realized exit to hard-floor path"
                 )
-                return CloseReason.GRID_IMBALANCE
             elif not meets_age:
                 logger.info(
                     f"⏸  IMBALANCE bypass deferred (candle guard): {position.side} "
@@ -632,6 +672,13 @@ class SmartCloseEngine:
                     f"loss={loss_pct:.2f}% < "
                     f"{self.config.imbalance_emergency_min_loss_pct:.1f}% — "
                     f"letting freeze + recovery window work"
+                )
+            elif not meets_floor:
+                logger.info(
+                    f"⏸  IMBALANCE bypass deferred (hard-floor guard): {position.side} "
+                    f"ratio={imbalance.imbalance_ratio:.1f}:1 fills={total_fills} "
+                    f"loss={loss_pct:.2f}% < floor {floor_pct:.2f}% — "
+                    f"skew alone cannot realize a loss"
                 )
 
         # ── Minimum position age ──
@@ -655,19 +702,46 @@ class SmartCloseEngine:
             floor_pct = self.config.hard_loss_pct_floor
 
         if loss_pct >= floor_pct:
-            self._recovery_state.pop(position.side, None)
-            # First breach scales out (half-close + retry); the engine layer
-            # synthesizes the partial fill. Subsequent breach closes the rest.
-            if not position.scaled_out and self.config.scale_out_fraction < 1.0:
+            # Patch H + J: route the floor through the same recovery
+            # window + post-scale-out cooldown as the imbalance bypass.
+            # Previously this branch did `_recovery_state.pop` THEN
+            # immediately closed, which silently disabled the very
+            # window the engine layer was supposed to honour.
+            if position.scaled_out:
+                cooldown_left = self.config.post_scale_out_cooldown_sec - (
+                    time.time() - self._scaled_out_at.get(position.side, 0.0)
+                )
+                if cooldown_left > 0:
+                    logger.info(
+                        f"⏸  HARD FLOOR cooldown: {position.side} "
+                        f"loss={loss_pct:.2f}% — {cooldown_left:.0f}s left "
+                        f"of post-scale-out grace"
+                    )
+                    return None
+                if self._should_defer_close(position.side, loss_pct):
+                    return None
                 logger.warning(
                     f"🛑 HARD FLOOR ({position.side}): loss={loss_pct:.2f}% >= "
-                    f"{floor_pct:.2f}% (ATR={atr_pct:.2f}%) — scaling out "
+                    f"{floor_pct:.2f}% — closing remainder (recovery window expired)"
+                )
+                return CloseReason.DRAWDOWN
+            if self.config.scale_out_fraction < 1.0:
+                # First breach — defer through recovery window first.
+                if self._should_defer_close(position.side, loss_pct):
+                    return None
+                logger.warning(
+                    f"🛑 HARD FLOOR ({position.side}): loss={loss_pct:.2f}% >= "
+                    f"{floor_pct:.2f}% (ATR={atr_pct:.2f}%) — recovery expired, scaling out "
                     f"{self.config.scale_out_fraction*100:.0f}%"
                 )
+                self._scaled_out_at[position.side] = time.time()
                 return CloseReason.PARTIAL_CLOSE
+            # Single-shot mode (no scale-out)
+            if self._should_defer_close(position.side, loss_pct):
+                return None
             logger.warning(
                 f"🛑 HARD FLOOR ({position.side}): loss={loss_pct:.2f}% >= "
-                f"{floor_pct:.2f}% — closing remainder (already scaled out)"
+                f"{floor_pct:.2f}% — recovery expired, single-shot close"
             )
             return CloseReason.DRAWDOWN
 
@@ -686,7 +760,9 @@ class SmartCloseEngine:
             candidate = candidate or self._check_momentum(position, current_price)
 
         if self.config.imbalance_close_enabled:
-            candidate = candidate or self._check_imbalance(position, imbalance, total_fills)
+            candidate = candidate or self._check_imbalance(
+                position, imbalance, total_fills, loss_pct=loss_pct, floor_pct=floor_pct
+            )
 
         if self.config.trailing_stop_enabled:
             candidate = candidate or self._check_trailing_stop(position, loss_pct)
@@ -800,30 +876,34 @@ class SmartCloseEngine:
         position: GridPosition,
         imbalance: GridImbalance,
         total_fills: int,
+        *,
+        loss_pct: float,
+        floor_pct: float,
     ) -> Optional[CloseReason]:
         """
-        Grid imbalance: If too many same-side fills, close the losing side.
-        
-        Logic: A balanced grid has roughly equal buy/sell fills. When one side
-        dominates 3:1+, the grid is no longer functioning as intended — it's
-        become a directional bet. Close the losing side positions to restore balance.
+        Grid imbalance: mark severe same-side skew, but do not directly realize a
+        loss from this path.
+
+        In this strategy, imbalance is a *risk signal*, not an autonomous red-close
+        instruction. Exposure controls should freeze new fills; if the position gets
+        bad enough to justify realizing a loss, the hard-floor / drawdown path above
+        owns that decision.
         """
         if total_fills < self.config.imbalance_min_fills:
             return None
-        
+
         if imbalance.imbalance_ratio < self.config.imbalance_ratio_threshold:
             return None
-        
-        # Only close if this position is on the overloaded side
+
         if position.side == imbalance.dominant_side:
-            # This position is on the overloaded side — close it
             logger.info(
-                f"⚖️ GRID IMBALANCE: {position.side} side overloaded "
+                f"⏸  GRID IMBALANCE held by guardrail: {position.side} overloaded "
                 f"(ratio {imbalance.imbalance_ratio:.1f}:1, "
-                f"buy={imbalance.buy_fills} sell={imbalance.sell_fills})"
+                f"buy={imbalance.buy_fills} sell={imbalance.sell_fills}, "
+                f"loss={loss_pct:.2f}%, floor={floor_pct:.2f}%) — "
+                f"freeze/manage via hard-floor path instead of direct close"
             )
-            return CloseReason.GRID_IMBALANCE
-        
+
         return None
     
     def _check_trailing_stop(self, position: GridPosition, loss_pct: float) -> Optional[CloseReason]:
@@ -927,6 +1007,10 @@ def process_fill(
         total_cost = position.entry_price * position.qty + fill.price * fill.qty
         position.qty += fill.qty
         position.entry_price = total_cost / position.qty
+        # Backfill opened_at if a prior exchange-sync set qty/side/entry but
+        # not the timestamp. Without this, age_seconds stays 0 forever.
+        if position.opened_at <= 0:
+            position.opened_at = fill.timestamp
     
     else:
         # Closing or reducing position (opposite side fill)

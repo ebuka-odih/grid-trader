@@ -20,6 +20,12 @@ def coin():
         suggested_lower=97.0,
         suggested_grids=10,
         suggested_leverage=50,
+        entry_quality_score=0.82,
+        entry_shape_template="trend_pullback",
+        entry_shape_spacing="buy_weighted",
+        entry_buy_density_bias=0.72,
+        entry_sell_density_bias=0.38,
+        pullback_depth_pct=0.9,
     )
 
 
@@ -45,7 +51,7 @@ class DecisionSupervisorTests(unittest.TestCase):
         result = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols=set(),
         )
 
@@ -56,7 +62,7 @@ class DecisionSupervisorTests(unittest.TestCase):
         result = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(confidence=0.2),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols=set(),
         )
 
@@ -67,7 +73,7 @@ class DecisionSupervisorTests(unittest.TestCase):
         result = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(lower=100.5, upper=101.0),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols=set(),
         )
 
@@ -78,7 +84,7 @@ class DecisionSupervisorTests(unittest.TestCase):
         result = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols={"AAVE/USDT:USDT"},
         )
 
@@ -89,7 +95,7 @@ class DecisionSupervisorTests(unittest.TestCase):
         result = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols=["AAVE/USDT:USDT", "DOGE/USDT:USDT"],
             max_active_per_symbol=4,
         )
@@ -99,12 +105,94 @@ class DecisionSupervisorTests(unittest.TestCase):
         full = DecisionSupervisor().review_pre_trade_decision(
             decision=decision(),
             coin_score=coin(),
-            token_profile={"leverage": 50, "max_leverage": 100, "min_confidence": 0.6},
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
             active_symbols=["AAVE/USDT:USDT"] * 4,
             max_active_per_symbol=4,
         )
         self.assertFalse(full.approved)
         self.assertTrue(any("capacity" in reason.lower() for reason in full.reasons))
+
+    def test_low_entry_quality_is_rejected(self):
+        weak_coin = coin()
+        weak_coin.entry_quality_score = 0.21
+        weak_coin.entry_shape_template = "atr_box"
+        weak_coin.entry_shape_spacing = "balanced"
+
+        result = DecisionSupervisor().review_pre_trade_decision(
+            decision=decision(),
+            coin_score=weak_coin,
+            token_profile={
+                "leverage": 50,
+                "max_leverage": 50,
+                "min_confidence": 0.6,
+                "min_entry_quality": 0.35,
+            },
+            active_symbols=set(),
+        )
+
+        self.assertFalse(result.approved)
+        self.assertTrue(any("entry quality" in reason.lower() for reason in result.reasons))
+
+    def test_borderline_confidence_is_auto_raised_for_strong_entry(self):
+        draft = decision(confidence=0.57)
+        result = DecisionSupervisor().review_pre_trade_decision(
+            decision=draft,
+            coin_score=coin(),
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
+            active_symbols=set(),
+        )
+
+        self.assertTrue(result.approved)
+        self.assertAlmostEqual(draft.confidence, 0.6, places=6)
+        self.assertTrue(any("auto-raised" in warning.lower() for warning in result.warnings))
+
+    def test_borderline_grid_width_is_auto_tightened(self):
+        draft = decision(lower=92.0, upper=108.2)
+        result = DecisionSupervisor().review_pre_trade_decision(
+            decision=draft,
+            coin_score=coin(),
+            token_profile={
+                "leverage": 50,
+                "max_leverage": 50,
+                "min_confidence": 0.6,
+                "max_grid_width_pct": 15.0,
+            },
+            active_symbols=set(),
+        )
+
+        self.assertTrue(result.approved)
+        self.assertAlmostEqual(draft.upper - draft.lower, 15.0, places=5)
+        self.assertTrue(any("auto-tightened" in warning.lower() for warning in result.warnings))
+
+    def test_borderline_entry_quality_can_pass_when_pullback_aligns(self):
+        aligned_coin = coin()
+        aligned_coin.entry_quality_score = 0.30
+        aligned_coin.pullback_depth_pct = 0.8
+        result = DecisionSupervisor().review_pre_trade_decision(
+            decision=decision(direction="long", market_regime="trending_up"),
+            coin_score=aligned_coin,
+            token_profile={
+                "leverage": 50,
+                "max_leverage": 50,
+                "min_confidence": 0.6,
+                "min_entry_quality": 0.35,
+            },
+            active_symbols=set(),
+        )
+
+        self.assertTrue(result.approved)
+        self.assertTrue(any("borderline entry quality" in warning.lower() for warning in result.warnings))
+
+    def test_strong_entry_shape_emits_warning_context(self):
+        result = DecisionSupervisor().review_pre_trade_decision(
+            decision=decision(),
+            coin_score=coin(),
+            token_profile={"leverage": 50, "max_leverage": 50, "min_confidence": 0.6},
+            active_symbols=set(),
+        )
+
+        self.assertTrue(result.approved)
+        self.assertTrue(any("strong entry shape" in warning.lower() for warning in result.warnings))
 
 
 if __name__ == "__main__":

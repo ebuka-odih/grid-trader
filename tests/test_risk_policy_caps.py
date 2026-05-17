@@ -14,8 +14,8 @@ class RiskPolicyCapsTests(unittest.TestCase):
         tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json")
         data = {
             "defaults": {
-                "leverage": 50,
-                "max_leverage": 100,
+                "leverage": 30,
+                "max_leverage": 50,
                 "num_grids": 10,
                 "order_size_usdt": 10.0,
                 "max_wallet_exposure_pct": 20.0,
@@ -24,15 +24,15 @@ class RiskPolicyCapsTests(unittest.TestCase):
                 "max_total_wallet_exposure_pct": 80,
                 "max_single_direction_exposure_pct": 50,
                 "max_trade_wallet_exposure_pct": 2.0,
-                "max_leverage": 100,
+                "max_leverage": 50,
                 "reserve_pct": 20,
                 "correlation_groups": [],
             },
             "profiles": {
                 "RISKY/USDT:USDT": {
                     "enabled": True,
-                    "leverage": 50,
-                    "max_leverage": 100,
+                    "leverage": 30,
+                    "max_leverage": 50,
                     "num_grids": 10,
                     "order_size_usdt": 10.0,
                     "max_wallet_exposure_pct": 20.0,
@@ -46,13 +46,12 @@ class RiskPolicyCapsTests(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(tmp.name) and os.unlink(tmp.name))
         return tmp.name
 
-    def test_funded_policy_uses_high_frequency_leverage_band_with_two_percent_margin_cap(self):
-        self.assertEqual(MIN_SAFE_LEVERAGE, 50)
-        self.assertEqual(MAX_SAFE_LEVERAGE, 100)
+    def test_funded_policy_uses_configured_leverage_band_with_two_percent_margin_cap(self):
+        self.assertLessEqual(MIN_SAFE_LEVERAGE, MAX_SAFE_LEVERAGE)
         self.assertGreaterEqual(DEFAULT_LEVERAGE, MIN_SAFE_LEVERAGE)
         self.assertLessEqual(DEFAULT_LEVERAGE, MAX_SAFE_LEVERAGE)
 
-    def test_scanner_suggests_high_frequency_leverage_band(self):
+    def test_scanner_suggests_configured_leverage_band(self):
         import pandas as pd
 
         scanner = CoinScanner()

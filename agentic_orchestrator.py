@@ -181,8 +181,8 @@ class AgenticOrchestrator:
         logger.info(f"   Reason: {agent_decision.reasoning}")
         logger.info(f"")
 
-        # ── Step 3: Deploy grid with direction bias ───────────────
-        state = self._deploy_biased_grid(coin_score, agent_decision.direction)
+        # ── Step 3: Deploy symmetric edge grid ───────────────────
+        state = self._deploy_edge_grid(coin_score, agent_decision.direction)
 
         # Record cycle start
         self.journal.record_cycle_start(
@@ -254,9 +254,10 @@ class AgenticOrchestrator:
                         mid_decision = self.agent.decide_mid_trade(self.engine.get_status())
 
                         if mid_decision.action == "close":
-                            logger.info(f"🤖 Agent says CLOSE! {mid_decision.reasoning}")
-                            close_reason = "agent_close"
-                            break
+                            logger.info(
+                                "🤖 Agent requested close but was ignored; engine close rules remain authoritative. "
+                                f"{mid_decision.reasoning}"
+                            )
                         elif mid_decision.action != "hold":
                             logger.info(f"🤖 Agent suggests: {mid_decision.action} — {mid_decision.reasoning}")
                             # In dry-run, we log the suggestion but don't reconfigure
@@ -285,7 +286,7 @@ class AgenticOrchestrator:
             close_reason = "ws_error"
 
         # ── Step 5: AGENT CLOSE DECISION ──────────────────────────
-        if close_reason in ("target_hit", "drawdown", "agent_close"):
+        if close_reason in ("target_hit", "drawdown"):
             close_decision = self.agent.decide_close(self.engine.get_status(), close_reason)
             if not close_decision.should_close and close_reason != "drawdown":
                 logger.info(f"🤖 Agent says DON'T CLOSE yet: {close_decision.reasoning}")
@@ -337,14 +338,16 @@ class AgenticOrchestrator:
         if learning:
             logger.info(f"🧠 LEARNING: {learning.suggestion}")
 
-    # ── Direction-Biased Grid ─────────────────────────────────────
+    # ── Symmetric edge grid deployment ───────────────────────────
 
-    def _deploy_biased_grid(self, coin_score: CoinScore, direction: str) -> 'DryRunState':
+    def _deploy_edge_grid(self, coin_score: CoinScore, direction: str) -> 'DryRunState':
         """
-        Deploy a grid with directional bias.
-        - "long": More buy levels below price (70/30 split)
-        - "short": More sell levels above price (70/30 split)
-        - "neutral": Even split (50/50)
+        Deploy a symmetric two-sided edge grid.
+
+        Direction remains metadata for agent analysis/logging only; the
+        executable ladder itself always keeps buys below price and sells above
+        price so inventory is managed by edge participation rather than by
+        one-sided side reassignment.
         """
         from dry_run_engine import DryRunState
         import time as _time
@@ -358,31 +361,12 @@ class AgenticOrchestrator:
             leverage=coin_score.suggested_leverage,
         )
 
-        # Apply direction bias by overriding side assignments
-        if direction in ("long", "short"):
-            price = coin_score.price
-            levels_below = [l for l in grid.grid_levels if l.price < price]
-            levels_above = [l for l in grid.grid_levels if l.price >= price]
-
-            if direction == "long":
-                # Long bias: more buys below, fewer sells above
-                for lvl in levels_below:
-                    lvl.side = "Buy"
-                # Only sell the top 30% of above-price levels
-                sell_count = max(1, len(levels_above) // 3)
-                for i, lvl in enumerate(levels_above):
-                    lvl.side = "Sell" if i >= len(levels_above) - sell_count else "Buy"
-                logger.info(f"📈 LONG bias applied: {sum(1 for l in grid.grid_levels if l.side=='Buy')} buys, {sum(1 for l in grid.grid_levels if l.side=='Sell')} sells")
-
-            elif direction == "short":
-                # Short bias: more sells above, fewer buys below
-                for lvl in levels_above:
-                    lvl.side = "Sell"
-                # Only buy the bottom 30% of below-price levels
-                buy_count = max(1, len(levels_below) // 3)
-                for i, lvl in enumerate(levels_below):
-                    lvl.side = "Buy" if i < buy_count else "Sell"
-                logger.info(f"📉 SHORT bias applied: {sum(1 for l in grid.grid_levels if l.side=='Sell')} sells, {sum(1 for l in grid.grid_levels if l.side=='Buy')} buys")
+        buy_levels = sum(1 for l in grid.grid_levels if l.side == "Buy")
+        sell_levels = sum(1 for l in grid.grid_levels if l.side == "Sell")
+        logger.info(
+            f"↔️ EDGE grid deployed with symmetric ladder: {buy_levels} buys below / "
+            f"{sell_levels} sells above | agent_direction={direction}"
+        )
 
         # Deploy to dry-run engine
         state = DryRunState(

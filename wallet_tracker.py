@@ -47,8 +47,52 @@ class WalletTracker:
         self._realized_pnl_total = 0.0
         self.positions: dict[str, PositionExposure] = {}
         self._realized_pnls: list[float] = []  # history of all realized PnLs
+        self._live_balance_mode = False
+        self._external_available_margin: Optional[float] = None
+        self._external_margin_used: Optional[float] = None
 
         logger.info(f"💰 Wallet Tracker initialized | balance=${initial_balance:.2f} | mode=dry-run")
+
+    def set_live_balance(
+        self,
+        *,
+        equity: float,
+        available_margin: Optional[float] = None,
+        margin_used: Optional[float] = None,
+    ):
+        """
+        Override wallet values from exchange in live mode.
+
+        The first live sync re-anchors `initial_balance` so pnl% and exposure
+        are measured against the real account, not the dry-run default.
+        """
+        if equity is None:
+            return
+        try:
+            equity_f = float(equity)
+        except (TypeError, ValueError):
+            return
+        if equity_f <= 0:
+            return
+
+        if not self._live_balance_mode:
+            self.initial_balance = equity_f
+            self._live_balance_mode = True
+            logger.info(
+                f"💰 Live wallet mode enabled | initial=${self.initial_balance:.4f}"
+            )
+
+        self._balance = equity_f
+        if available_margin is not None:
+            try:
+                self._external_available_margin = float(available_margin)
+            except (TypeError, ValueError):
+                pass
+        if margin_used is not None:
+            try:
+                self._external_margin_used = float(margin_used)
+            except (TypeError, ValueError):
+                pass
 
     def restore_realized_pnl(self, pnl_total: float):
         """
@@ -146,8 +190,13 @@ class WalletTracker:
         """
         total_unrealized = sum(p.unrealized_pnl for p in self.positions.values())
         total_margin = sum(p.margin_used for p in self.positions.values())
+        if self._external_margin_used is not None:
+            total_margin = max(total_margin, max(0.0, self._external_margin_used))
         total_exposure = total_margin
-        available = self._balance - total_margin + total_unrealized
+        if self._external_available_margin is not None:
+            available = self._external_available_margin
+        else:
+            available = self._balance - total_margin + total_unrealized
 
         exposure_pct = (total_exposure / self._balance * 100) if self._balance > 0 else 0
         free_pct = max(0, (available / self._balance * 100)) if self._balance > 0 else 0
