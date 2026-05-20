@@ -548,7 +548,10 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
             wallet_balance=100.0,
         )
 
-        self.assertEqual([coin.symbol for coin in filtered], ["BTC/USDT:USDT", "SOL/USDT:USDT"])
+        self.assertEqual([coin.symbol for coin in filtered], ["BTC/USDT:USDT", "DOGE/USDT:USDT", "SOL/USDT:USDT"])
+        shaped = next(coin for coin in filtered if coin.symbol == "DOGE/USDT:USDT")
+        self.assertEqual(getattr(shaped, "grid_style"), "micro_scalp")
+        self.assertLessEqual(shaped.suggested_grids, 10)
         repaired = next(coin for coin in filtered if coin.symbol == "SOL/USDT:USDT")
         self.assertAlmostEqual(repaired.suggested_upper - repaired.suggested_lower, 15.0, places=5)
 

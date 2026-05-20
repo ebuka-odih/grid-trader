@@ -320,6 +320,129 @@ def _candidate_market_regime(coin: CoinScore) -> str:
     return "ranging"
 
 
+SAFETY_REJECTION_TOKENS = (
+    "blacklist",
+    "precision",
+    "minimum order",
+    "min order",
+    "margin",
+    "exposure",
+    "capacity",
+    "liquidation",
+    "api",
+    "exchange",
+    "deploy failed",
+)
+
+
+def is_safety_rejection(stage: str, reasons: list[str] | None) -> bool:
+    """Return True when a rejection should suppress the whole symbol."""
+    stage_text = str(stage or "").lower()
+    if stage_text in {"risk", "capacity", "deploy"}:
+        return True
+    reason_text = " ".join(str(reason).lower() for reason in (reasons or []))
+    return any(token in reason_text for token in SAFETY_REJECTION_TOKENS)
+
+
+def rejection_cooldown_key(symbol: str, grid_style: str | None, stage: str, reasons: list[str] | None = None) -> str:
+    """Scope cooldowns to symbol+style for quality misses and symbol for safety misses."""
+    if is_safety_rejection(stage, reasons):
+        return f"{symbol}|safety|{stage or 'unknown'}"
+    style = (grid_style or "unknown_style").strip() or "unknown_style"
+    return f"{symbol}|{style}|{stage or 'unknown'}"
+
+
+def classify_grid_style(coin: CoinScore) -> str:
+    """Classify a scanner candidate into a deploy style instead of pass/fail."""
+    regime = _candidate_market_regime(coin).lower()
+    trend = str(getattr(coin, "trend_direction", "neutral") or "neutral").lower()
+    entry_quality = float(getattr(coin, "entry_quality_score", 0.0) or 0.0)
+    mr = float(getattr(coin, "mean_reversion_score", 0.0) or 0.0)
+    atr = float(getattr(coin, "atr_pct", 0.0) or 0.0)
+    range_pct = float(getattr(coin, "range_pct", 0.0) or 0.0)
+    pullback = float(getattr(coin, "pullback_depth_pct", 0.0) or 0.0)
+    range_pos = float(getattr(coin, "range_position", 0.5) or 0.5)
+    vwap_dist = float(getattr(coin, "vwap_distance_pct", 0.0) or 0.0)
+
+    if atr >= 3.5 or range_pct >= 12.0 or "volatile" in regime:
+        style = "wide_volatile_grid"
+    elif trend in {"long", "up", "bull", "bullish"} or "up" in regime:
+        if entry_quality >= 0.25 and (entry_quality >= 0.45 or pullback >= 0.45 or range_pos <= 0.45 or vwap_dist < 0):
+            style = "long_pullback_grid"
+        else:
+            style = "micro_scalp"
+    elif trend in {"short", "down", "bear", "bearish"} or "down" in regime:
+        if entry_quality >= 0.25 and (entry_quality >= 0.45 or pullback >= 0.45 or range_pos >= 0.55 or vwap_dist > 0):
+            style = "short_rebound_grid"
+        else:
+            style = "micro_scalp"
+    elif mr >= 0.55 and entry_quality >= 0.25:
+        style = "neutral_scalp"
+    elif entry_quality < 0.25:
+        style = "micro_scalp"
+    else:
+        style = "neutral_scalp"
+
+    setattr(coin, "grid_style", style)
+    return style
+
+
+def apply_grid_style_to_candidate(coin: CoinScore, wallet_balance: float | None = None) -> str:
+    """Shape scanner params for the selected style before supervisor review."""
+    style = classify_grid_style(coin)
+    if style == "micro_scalp":
+        coin.suggested_grids = normalize_grid_density(min(int(coin.suggested_grids or 10), 10), wallet_balance=wallet_balance)
+        coin.entry_shape_spacing = "balanced"
+        coin.entry_buy_density_bias = 0.5
+        coin.entry_sell_density_bias = 0.5
+    elif style == "long_pullback_grid":
+        coin.trend_direction = "long"
+        coin.entry_shape_template = "trend_pullback"
+        coin.entry_shape_spacing = "buy_weighted"
+        coin.entry_buy_density_bias = max(float(getattr(coin, "entry_buy_density_bias", 0.5) or 0.5), 0.65)
+        coin.entry_sell_density_bias = min(float(getattr(coin, "entry_sell_density_bias", 0.5) or 0.5), 0.45)
+        coin.suggested_grids = normalize_grid_density(max(10, min(int(coin.suggested_grids or 12), 14)), wallet_balance=wallet_balance)
+    elif style == "short_rebound_grid":
+        coin.trend_direction = "short"
+        coin.entry_shape_template = "trend_pullback"
+        coin.entry_shape_spacing = "sell_weighted"
+        coin.entry_buy_density_bias = min(float(getattr(coin, "entry_buy_density_bias", 0.5) or 0.5), 0.45)
+        coin.entry_sell_density_bias = max(float(getattr(coin, "entry_sell_density_bias", 0.5) or 0.5), 0.65)
+        coin.suggested_grids = normalize_grid_density(max(10, min(int(coin.suggested_grids or 12), 14)), wallet_balance=wallet_balance)
+    elif style == "wide_volatile_grid":
+        coin.suggested_grids = normalize_grid_density(max(8, min(int(coin.suggested_grids or 10), 12)), wallet_balance=wallet_balance)
+    else:
+        coin.suggested_grids = normalize_grid_density(max(10, min(int(coin.suggested_grids or 12), 14)), wallet_balance=wallet_balance)
+
+    coin.entry_shape_notes = (getattr(coin, "entry_shape_notes", "") or "").strip()
+    style_note = f"style={style}"
+    if style_note not in coin.entry_shape_notes:
+        coin.entry_shape_notes = f"{coin.entry_shape_notes}; {style_note}".strip("; ")
+    return style
+
+
+def candidate_deploy_score(coin: CoinScore) -> float:
+    """Score expected scalp quality after style shaping."""
+    liquidity = min(1.0, float(getattr(coin, "volume_24h_usdt", 0.0) or 0.0) / 250_000_000.0)
+    entry_quality = max(0.0, min(1.0, float(getattr(coin, "entry_quality_score", 0.0) or 0.0)))
+    base = max(0.0, min(1.0, float(getattr(coin, "grid_score", 0.0) or 0.0)))
+    mr = max(0.0, min(1.0, float(getattr(coin, "mean_reversion_score", 0.0) or 0.0)))
+    style = getattr(coin, "grid_style", None) or classify_grid_style(coin)
+    style_fit = {
+        "neutral_scalp": max(mr, entry_quality),
+        "long_pullback_grid": entry_quality,
+        "short_rebound_grid": entry_quality,
+        "micro_scalp": min(0.55, max(base, liquidity * 0.6)),
+        "wide_volatile_grid": min(0.6, liquidity),
+    }.get(style, base)
+    atr = float(getattr(coin, "atr_pct", 0.0) or 0.0)
+    range_pct = float(getattr(coin, "range_pct", 0.0) or 0.0)
+    risk_penalty = max(0.0, atr - 2.5) * 0.06 + max(0.0, range_pct - 8.0) * 0.02
+    score = (liquidity * 0.20) + (entry_quality * 0.25) + (style_fit * 0.25) + (base * 0.20) + (mr * 0.10) - risk_penalty
+    setattr(coin, "deploy_score", round(max(0.0, score), 4))
+    return float(getattr(coin, "deploy_score"))
+
+
 def build_scanner_candidate_decision(
     coin: CoinScore,
     token_profile: dict | None = None,
@@ -327,7 +450,12 @@ def build_scanner_candidate_decision(
 ) -> PreTradeDecision:
     """Build the same draft decision the algorithmic picker would create for a scanner score."""
     token_profile = token_profile or {}
+    style = apply_grid_style_to_candidate(coin, wallet_balance=wallet_balance)
     confidence = max(0.0, min(0.9, float(getattr(coin, "grid_score", 0.0) or 0.0)))
+    if style == "micro_scalp":
+        confidence = max(confidence, 0.35)
+    elif style in {"long_pullback_grid", "short_rebound_grid", "neutral_scalp"}:
+        confidence = max(confidence, min(0.7, 0.45 + float(getattr(coin, "entry_quality_score", 0.0) or 0.0) * 0.35))
     profile_leverage = resolve_profile_leverage(token_profile, fallback=coin.suggested_leverage or DEFAULT_LEVERAGE)
     return PreTradeDecision(
         symbol=coin.symbol,
@@ -338,7 +466,7 @@ def build_scanner_candidate_decision(
         num_grids=normalize_grid_density(coin.suggested_grids, wallet_balance=wallet_balance),
         leverage=profile_leverage,
         reasoning=(
-            f"Scanner prefilter: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
+            f"Scanner prefilter: style={style} score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
             f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
         ),
         market_regime=_candidate_market_regime(coin),
@@ -354,7 +482,7 @@ def prefilter_scanner_candidates_for_deploy(
     active_symbols: list[str] | None = None,
     max_active_per_symbol: int = MAX_GRIDS_PER_SYMBOL,
 ) -> list[CoinScore]:
-    """Discard scanner candidates that would obviously fail the supervisor anyway."""
+    """Safety-only prefilter; quality misses are shaped into styles, not dropped."""
     decision_supervisor = decision_supervisor or DecisionSupervisor()
     token_profile_by_symbol = token_profile_by_symbol or {}
     active_symbols = list(active_symbols or [])
@@ -374,20 +502,29 @@ def prefilter_scanner_candidates_for_deploy(
             active_symbols=active_symbols,
             max_active_per_symbol=max_active_per_symbol,
         )
-        if review.approved:
-            coin.suggested_lower = draft_decision.lower
-            coin.suggested_upper = draft_decision.upper
-            coin.suggested_grids = draft_decision.num_grids
-            coin.suggested_leverage = draft_decision.leverage
-            coin.market_regime = draft_decision.market_regime or coin.market_regime
-            coin.trend_direction = draft_decision.direction or coin.trend_direction
-            deployable.append(coin)
-        else:
+        if not review.approved and is_safety_rejection("prefilter", list(review.reasons)):
             logger.info(
-                "🚫 PREFILTER REJECT: %s | %s",
+                "🚫 PREFILTER SAFETY REJECT: %s | style=%s | %s",
                 coin.symbol,
+                getattr(coin, "grid_style", "unknown"),
                 "; ".join(review.reasons),
             )
+            continue
+        if not review.approved:
+            logger.info(
+                "🧭 PREFILTER STYLE-SHAPED: %s | style=%s | deferred quality review: %s",
+                coin.symbol,
+                getattr(coin, "grid_style", "unknown"),
+                "; ".join(review.reasons),
+            )
+        coin.suggested_lower = draft_decision.lower
+        coin.suggested_upper = draft_decision.upper
+        coin.suggested_grids = draft_decision.num_grids
+        coin.suggested_leverage = draft_decision.leverage
+        coin.market_regime = draft_decision.market_regime or coin.market_regime
+        coin.trend_direction = draft_decision.direction or coin.trend_direction
+        candidate_deploy_score(coin)
+        deployable.append(coin)
 
     return deployable
 
@@ -992,6 +1129,7 @@ class MultiGridManager:
         reasons: list[str] | None,
         free_slots: int,
         cooldown_seconds: int | None = None,
+        grid_style: str | None = None,
     ) -> None:
         now_ts = time.time()
         normalized_reasons = [str(reason) for reason in (reasons or []) if str(reason).strip()]
@@ -1000,15 +1138,19 @@ class MultiGridManager:
             stage=stage,
             reasons=normalized_reasons,
         ))
+        key = rejection_cooldown_key(symbol, grid_style, stage, normalized_reasons)
         payload = {
             "symbol": symbol,
+            "key": key,
+            "grid_style": grid_style or "unknown_style",
+            "is_safety_rejection": is_safety_rejection(stage, normalized_reasons),
             "stage": stage,
             "reasons": normalized_reasons,
             "rejected_at": now_ts,
             "cooldown_seconds": cooldown,
             "cooldown_until": now_ts + cooldown,
         }
-        self._recently_rejected[symbol] = payload
+        self._recently_rejected[key] = payload
         self._deploy_rejection_history.append(payload)
 
     def _session_start_file(self) -> str:
@@ -1646,7 +1788,18 @@ class MultiGridManager:
                 rejection_reasons.append("per-symbol capacity reached")
             if self.risk_monitor.is_blacklisted(coin.symbol):
                 rejection_reasons.append("symbol blacklisted by risk monitor")
-            active_rejection = self._recently_rejected.get(coin.symbol)
+            grid_style = classify_grid_style(coin)
+            active_rejection = next(
+                (
+                    payload for payload in self._recently_rejected.values()
+                    if payload.get("symbol") == coin.symbol
+                    and (
+                        payload.get("is_safety_rejection")
+                        or payload.get("grid_style") == grid_style
+                    )
+                ),
+                None,
+            )
             if active_rejection:
                 remaining = max(0, int(round(float(active_rejection.get("cooldown_until") or 0.0) - now_ts)))
                 if remaining > 0:
@@ -1763,6 +1916,7 @@ class MultiGridManager:
                     stage="capacity",
                     reasons=["per-symbol capacity reached before deploy"],
                     free_slots=max(0, self.max_grids - len(self.slots)),
+                    grid_style=getattr(coin_score, "grid_style", None),
                 )
                 continue
 
@@ -1807,6 +1961,7 @@ class MultiGridManager:
                     stage="supervisor",
                     reasons=list(review.reasons),
                     free_slots=max(0, self.max_grids - len(self.slots)),
+                    grid_style=getattr(coin_score, "grid_style", None),
                 )
 
                 continue
@@ -1847,6 +2002,7 @@ class MultiGridManager:
                     stage="risk",
                     reasons=list(risk_result.get("reasons") or []),
                     free_slots=max(0, self.max_grids - len(self.slots)),
+                    grid_style=getattr(coin_score, "grid_style", None),
                 )
 
                 continue
@@ -1919,6 +2075,7 @@ class MultiGridManager:
                     stage="deploy",
                     reasons=[str(exc)],
                     free_slots=max(0, self.max_grids - len(self.slots)),
+                    grid_style=getattr(coin_score, "grid_style", None),
                 )
                 continue
 
@@ -1938,22 +2095,12 @@ class MultiGridManager:
         if not available or num_picks <= 0:
             return []
 
-        # Score each coin: base grid_score + volume bonus + diversification potential
+        # Score each coin by expected deploy/scalp quality after style shaping.
         scored: list[tuple[float, CoinScore, str]] = []
         for coin in available:
             sector = _get_sector(coin.symbol)
-            # Base score from scanner (range + ATR + volume + mean reversion)
-            base = coin.grid_score
-            # Volume bonus: higher volume = more liquid = better for grids
-            vol_bonus = min(0.05, coin.volume_24h_usdt / 2e9)  # cap at 0.05
-            # Mean reversion bonus: critical for grid success
-            mr_bonus = coin.mean_reversion_score * 0.05
-            # Penalize extreme volatility slightly
-            vol_penalty = 0.0
-            if coin.atr_pct > 3.0:
-                vol_penalty = (coin.atr_pct - 3.0) * 0.02
-
-            final_score = base + vol_bonus + mr_bonus - vol_penalty
+            apply_grid_style_to_candidate(coin, wallet_balance=wallet_balance)
+            final_score = candidate_deploy_score(coin)
             scored.append((final_score, coin, sector))
 
         # Sort by score descending
@@ -1983,7 +2130,8 @@ class MultiGridManager:
                 wallet_balance=wallet_balance,
             )
             decision.reasoning = (
-                f"Algorithmic pick: score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
+                f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
+                f"deploy_score={getattr(coin, 'deploy_score', score):.3f} score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
                 f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
             )
             decision.narrative = (
@@ -1994,7 +2142,7 @@ class MultiGridManager:
 
             logger.info(
                 f"📊 ALGO PICK: {decision.symbol} | dir={decision.direction} | "
-                f"sector={sector} | score={coin.grid_score:.3f} | "
+                f"sector={sector} | style={getattr(coin, 'grid_style', 'unknown')} | deploy_score={score:.3f} | score={coin.grid_score:.3f} | "
                 f"mr={coin.mean_reversion_score:.2f} | trend={coin.trend_direction} | "
                 f"regime={decision.market_regime} | conf={decision.confidence:.2f} | "
                 f"grid={decision.lower:.4f}-{decision.upper:.4f} | "
