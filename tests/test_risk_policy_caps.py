@@ -107,7 +107,7 @@ class RiskPolicyCapsTests(unittest.TestCase):
             min_order_size_usdt=0.1,
         )
 
-        self.assertEqual(grids, 10)
+        self.assertEqual(grids, 9)
         self.assertLessEqual(grids * 0.1, 1.0)
 
 

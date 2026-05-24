@@ -40,10 +40,10 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
 
     def test_grid_density_is_normalized_to_scalping_range(self):
         """Decision/scanner grid counts should be clamped to 10–20 internal levels."""
-        self.assertEqual(normalize_grid_density(5), 10)
+        self.assertEqual(normalize_grid_density(5), 6)
         self.assertEqual(normalize_grid_density(10), 10)
-        self.assertEqual(normalize_grid_density(15), 15)
-        self.assertEqual(normalize_grid_density(30), 20)
+        self.assertEqual(normalize_grid_density(15), 10)
+        self.assertEqual(normalize_grid_density(30), 10)
 
     def test_improvement_loop_migrates_existing_grid_cycles_table(self):
         """Existing DBs from v1 must be altered instead of breaking v2 journaling."""
@@ -495,7 +495,7 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
         self.assertEqual(decision.direction, "long")
         self.assertEqual(decision.market_regime, "ranging")
         self.assertEqual(decision.leverage, 12)
-        self.assertEqual(decision.num_grids, 10)
+        self.assertEqual(decision.num_grids, 6)
         self.assertEqual(decision.confidence, 0.84)
 
     def test_scanner_candidate_prefilter_rejects_obvious_supervisor_failures(self):

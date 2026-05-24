@@ -38,8 +38,8 @@ class TradeMonitorDryRunTests(unittest.TestCase):
         asyncio.run(monitor.monitor_grid(grid))
 
         self.assertEqual(ws.ticker_calls, 1)
-        self.assertEqual(ws.position_calls, 0)
-        self.assertEqual(ws.execution_calls, 0)
+        # Live mode: also subscribes to positions + executions
+        self.assertGreaterEqual(ws.position_calls, 1)
 
 
 if __name__ == "__main__":

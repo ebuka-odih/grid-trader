@@ -1,8 +1,8 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from coin_scanner import CoinScore
-from config import DRY_RUN
 from grid_engine import GridEngine
 
 
@@ -80,18 +80,21 @@ class GridEngineSafetyTests(unittest.TestCase):
         self.assertNotEqual(first.grid_id, second.grid_id)
 
     def test_quick_deploy_in_dry_run_never_calls_private_exchange_methods(self):
-        self.assertTrue(DRY_RUN, "Regression test assumes DRY_RUN is enabled")
-        engine = GridEngine()
-        fake_exchange = FakeExchange()
-        engine.exchange = fake_exchange
+        # This test verifies the grid engine's dry-run behavior. The system is
+        # currently configured as LIVE (DRY_RUN=false) — simulate DRY_RUN for
+        # this test by temporarily patching.
+        with patch('grid_engine.DRY_RUN', True):
+            engine = GridEngine()
+            fake_exchange = FakeExchange()
+            engine.exchange = fake_exchange
 
-        grid = asyncio.run(engine.quick_deploy(sample_coin()))
+            grid = asyncio.run(engine.quick_deploy(sample_coin()))
 
-        self.assertEqual(fake_exchange.set_leverage_calls, 0)
-        self.assertEqual(fake_exchange.limit_order_calls, 0)
-        self.assertTrue(grid.is_active)
-        self.assertTrue(grid.grid_levels)
-        self.assertTrue(all(level.status == "placed" for level in grid.grid_levels))
+            self.assertEqual(fake_exchange.set_leverage_calls, 0)
+            self.assertEqual(fake_exchange.limit_order_calls, 0)
+            self.assertTrue(grid.is_active)
+            self.assertTrue(grid.grid_levels)
+            self.assertTrue(all(level.status == "placed" for level in grid.grid_levels))
 
 
 if __name__ == "__main__":
