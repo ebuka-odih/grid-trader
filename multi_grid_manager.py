@@ -1780,6 +1780,24 @@ class MultiGridManager:
 
         active_symbols = [slot.symbol for slot in self.slots.values()]
 
+        # 🔧 Penalize learning bonus for symbols already at/near capacity.
+        # The scanner's learning bonus inflates scores for historically profitable
+        # coins (up to +0.8), making fresh candidates invisible in the top ranks.
+        # Reduce it proportionally to capacity usage so new coins can compete.
+        for coin in scores:
+            symbol = coin.symbol
+            current_count = sum(1 for s in active_symbols if s == symbol)
+            if current_count > 0:
+                learning = getattr(coin, "learning_score", 0) or 0
+                if learning > 0:
+                    capacity_ratio = current_count / max(1, MAX_GRIDS_PER_SYMBOL)
+                    penalty = capacity_ratio * 0.85  # up to 85% reduction
+                    reduced_learning = learning * (1 - penalty)
+                    score_drop = reduced_learning - learning
+                    coin.learning_score = round(reduced_learning, 4)
+                    coin.grid_score = max(0.0, round(coin.grid_score + score_drop, 4))
+        scores.sort(key=lambda c: c.grid_score, reverse=True)
+
         now_ts = time.time()
         self._prune_recent_rejections(now_ts)
 
