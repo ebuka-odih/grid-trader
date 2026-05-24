@@ -18,6 +18,9 @@ services:
       PYTHONUNBUFFERED: "1"
     ports:
       - "8765:8765"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       - grid_trader_data:/data
       - grid_trader_logs:/app/logs

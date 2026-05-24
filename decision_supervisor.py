@@ -114,9 +114,26 @@ class DecisionSupervisor:
                 f"Invalid grid range: lower {decision.lower} must be below upper {decision.upper}"
             )
         elif not (decision.lower <= coin_score.price <= decision.upper):
-            reasons.append(
-                f"Current price {coin_score.price:.6f} is outside grid range {decision.lower:.6f}-{decision.upper:.6f}"
-            )
+            # Directional grids (long/short) deliberately sit on one side of price.
+            # LONG grid: levels below price — allow if price is at or above upper bound
+            # SHORT grid: levels above price — allow if price is at or below lower bound
+            atr_pct = float(getattr(coin_score, "atr_pct", 0.0) or 0.0)
+            atr_price = coin_score.price * (atr_pct / 200.0) if atr_pct > 0 else 0.0
+            dirn = getattr(decision, "direction", "neutral") or "neutral"
+
+            if dirn == "long" and coin_score.price >= decision.upper:
+                # LONG edge: price above grid — acceptable (buy zone below price)
+                pass  # consider the check passed
+            elif dirn == "short" and coin_score.price <= decision.lower:
+                # SHORT edge: price below grid — acceptable (sell zone above price)
+                pass  # consider the check passed
+            elif abs(coin_score.price - decision.upper) <= atr_price or abs(coin_score.price - decision.lower) <= atr_price:
+                # Price is within 0.5 ATR of a grid edge — close enough
+                pass  # consider the check passed
+            else:
+                reasons.append(
+                    f"Current price {coin_score.price:.6f} is outside grid range {decision.lower:.6f}-{decision.upper:.6f}"
+                )
         else:
             width_pct = ((decision.upper - decision.lower) / coin_score.price) * 100
             max_width = float(token_profile.get("max_grid_width_pct", self.DEFAULT_MAX_GRID_WIDTH_PCT))
