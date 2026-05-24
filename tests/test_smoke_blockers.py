@@ -22,8 +22,21 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
         ]
 
         self.assertEqual(symbol_grid_count(active_symbols, "DOGE/USDT:USDT"), 1)
-        self.assertFalse(symbol_has_grid_capacity(active_symbols, "DOGE/USDT:USDT"))
-        self.assertTrue(symbol_has_grid_capacity(active_symbols, "ZEC/USDT:USDT"))
+        # With max_per_symbol=1, already-active DOGE has no capacity left
+        self.assertFalse(symbol_has_grid_capacity(active_symbols, "DOGE/USDT:USDT", max_per_symbol=1))
+        self.assertTrue(symbol_has_grid_capacity(active_symbols, "ZEC/USDT:USDT", max_per_symbol=1))
+
+    def test_symbol_capacity_allows_multi_grid_per_symbol(self):
+        """When max_per_symbol=3, up to 3 grids fit on the same symbol."""
+        active_symbols = [
+            "DOGE/USDT:USDT",
+        ]
+        self.assertEqual(symbol_grid_count(active_symbols, "DOGE/USDT:USDT"), 1)
+        self.assertTrue(symbol_has_grid_capacity(active_symbols, "DOGE/USDT:USDT", max_per_symbol=3))
+        
+        # With 3 DOGE slots, capacity exhausted
+        active_3 = ["DOGE/USDT:USDT", "DOGE/USDT:USDT", "DOGE/USDT:USDT"]
+        self.assertFalse(symbol_has_grid_capacity(active_3, "DOGE/USDT:USDT", max_per_symbol=3))
 
     def test_grid_density_is_normalized_to_scalping_range(self):
         """Decision/scanner grid counts should be clamped to 10–20 internal levels."""

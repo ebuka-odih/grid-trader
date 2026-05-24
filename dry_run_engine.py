@@ -212,6 +212,21 @@ class DryRunEngine:
             leverage=coin_score.suggested_leverage,
         )
         
+        # ── Sweep fill: immediately fill levels already crossed by price ──
+        sweep_price = coin_score.price
+        sweep_fills = 0
+        for level in grid.grid_levels:
+            if level.index in state.filled_levels:
+                continue
+            if level.side == "Buy" and sweep_price <= level.price:
+                self._simulate_fill(level, sweep_price)
+                sweep_fills += 1
+            elif level.side == "Sell" and sweep_price >= level.price:
+                self._simulate_fill(level, sweep_price)
+                sweep_fills += 1
+        if sweep_fills > 0:
+            logger.info(f"   🧹 SWEEP FILL: {sweep_fills} levels filled on deploy @ ${sweep_price:.4f}")
+        
         logger.info(f"🧪 DRY-RUN Grid deployed (v4): {grid.symbol} | "
                      f"{grid.lower_price:.4f}-{grid.upper_price:.4f} | "
                      f"{len(grid.grid_levels)} levels | lev={grid.leverage}x")

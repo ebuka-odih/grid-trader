@@ -393,8 +393,8 @@ def apply_grid_style_to_candidate(coin: CoinScore, wallet_balance: float | None 
     if style == "micro_scalp":
         coin.suggested_grids = normalize_grid_density(min(int(coin.suggested_grids or 10), 10), wallet_balance=wallet_balance)
         coin.entry_shape_spacing = "balanced"
-        coin.entry_buy_density_bias = 0.5
-        coin.entry_sell_density_bias = 0.5
+        coin.entry_buy_density_bias = 0.70
+        coin.entry_sell_density_bias = 0.70
     elif style == "long_pullback_grid":
         coin.trend_direction = "long"
         coin.entry_shape_template = "trend_pullback"

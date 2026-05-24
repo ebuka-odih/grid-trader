@@ -12,7 +12,8 @@
       "pnl_squared_sum": 0.047744029999999986,
       "avg_duration_seconds": 355.44922473889966,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ENSO/USDT:USDT": {
       "symbol": "ENSO/USDT:USDT",
@@ -26,7 +27,8 @@
       "pnl_squared_sum": 0.10610396999999999,
       "avg_duration_seconds": 524.109604908248,
       "cooldown_until": 1777738009.1103811,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "GENIUS/USDT:USDT": {
       "symbol": "GENIUS/USDT:USDT",
@@ -40,7 +42,8 @@
       "pnl_squared_sum": 0.028244619999999995,
       "avg_duration_seconds": 295.66158906221375,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "MON/USDT:USDT": {
       "symbol": "MON/USDT:USDT",
@@ -54,7 +57,8 @@
       "pnl_squared_sum": 4.0185457,
       "avg_duration_seconds": 487.2333825148789,
       "cooldown_until": 1777755079.4893522,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "HYPE/USDT:USDT": {
       "symbol": "HYPE/USDT:USDT",
@@ -68,7 +72,8 @@
       "pnl_squared_sum": 0.00113846,
       "avg_duration_seconds": 1151.729407787323,
       "cooldown_until": 1777655146.3774495,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "CHIP/USDT:USDT": {
       "symbol": "CHIP/USDT:USDT",
@@ -82,7 +87,8 @@
       "pnl_squared_sum": 0.88111088,
       "avg_duration_seconds": 527.3950310896853,
       "cooldown_until": 1777762958.3263333,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "PLUME/USDT:USDT": {
       "symbol": "PLUME/USDT:USDT",
@@ -96,7 +102,8 @@
       "pnl_squared_sum": 0.00015876,
       "avg_duration_seconds": 1091.8846406936646,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "PENDLE/USDT:USDT": {
       "symbol": "PENDLE/USDT:USDT",
@@ -110,7 +117,8 @@
       "pnl_squared_sum": 0.025685909999999975,
       "avg_duration_seconds": 348.49338048763497,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "BASED/USDT:USDT": {
       "symbol": "BASED/USDT:USDT",
@@ -124,7 +132,8 @@
       "pnl_squared_sum": 0.006817490000000002,
       "avg_duration_seconds": 465.606922183718,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "1000LUNC/USDT:USDT": {
       "symbol": "1000LUNC/USDT:USDT",
@@ -138,7 +147,8 @@
       "pnl_squared_sum": 0.6866833200000001,
       "avg_duration_seconds": 490.9209846036377,
       "cooldown_until": 1777758600.5171354,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "VIRTUAL/USDT:USDT": {
       "symbol": "VIRTUAL/USDT:USDT",
@@ -152,7 +162,8 @@
       "pnl_squared_sum": 0.0039316,
       "avg_duration_seconds": 1402.440387268861,
       "cooldown_until": 1777655146.3769958,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "DRIFT/USDT:USDT": {
       "symbol": "DRIFT/USDT:USDT",
@@ -166,7 +177,8 @@
       "pnl_squared_sum": 1.10909662,
       "avg_duration_seconds": 171.44487683505434,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "MEGA/USDT:USDT": {
       "symbol": "MEGA/USDT:USDT",
@@ -180,7 +192,8 @@
       "pnl_squared_sum": 5.978854069999999,
       "avg_duration_seconds": 287.8256960952983,
       "cooldown_until": 1777759994.4992278,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "APE/USDT:USDT": {
       "symbol": "APE/USDT:USDT",
@@ -194,7 +207,8 @@
       "pnl_squared_sum": 24.654474880000002,
       "avg_duration_seconds": 261.47329367058626,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "AIXBT/USDT:USDT": {
       "symbol": "AIXBT/USDT:USDT",
@@ -208,7 +222,8 @@
       "pnl_squared_sum": 0.0035483299999999997,
       "avg_duration_seconds": 642.2519448314395,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ORDI/USDT:USDT": {
       "symbol": "ORDI/USDT:USDT",
@@ -222,7 +237,8 @@
       "pnl_squared_sum": 0.021113780000000002,
       "avg_duration_seconds": 730.247253815333,
       "cooldown_until": 1777738588.3620603,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "XAG/USDT:USDT": {
       "symbol": "XAG/USDT:USDT",
@@ -236,7 +252,8 @@
       "pnl_squared_sum": 0.02300351,
       "avg_duration_seconds": 1802.9552105903626,
       "cooldown_until": 1777655146.3772445,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "SWARMS/USDT:USDT": {
       "symbol": "SWARMS/USDT:USDT",
@@ -250,7 +267,8 @@
       "pnl_squared_sum": 0.029066979999999996,
       "avg_duration_seconds": 274.4496353921436,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "H/USDT:USDT": {
       "symbol": "H/USDT:USDT",
@@ -264,7 +282,8 @@
       "pnl_squared_sum": 0.024697929999999993,
       "avg_duration_seconds": 529.2619719791408,
       "cooldown_until": 1777655146.3770642,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "SUI/USDT:USDT": {
       "symbol": "SUI/USDT:USDT",
@@ -278,7 +297,8 @@
       "pnl_squared_sum": 0.0007545900000000001,
       "avg_duration_seconds": 1492.7826903820037,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "BLEND/USDT:USDT": {
       "symbol": "BLEND/USDT:USDT",
@@ -292,7 +312,8 @@
       "pnl_squared_sum": 2.906282460000001,
       "avg_duration_seconds": 276.2017611139698,
       "cooldown_until": 1777655146.376175,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ONDO/USDT:USDT": {
       "symbol": "ONDO/USDT:USDT",
@@ -306,7 +327,8 @@
       "pnl_squared_sum": 0.0015229899999999999,
       "avg_duration_seconds": 1301.0831307081075,
       "cooldown_until": 1777655146.3774238,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "BSB/USDT:USDT": {
       "symbol": "BSB/USDT:USDT",
@@ -320,7 +342,8 @@
       "pnl_squared_sum": 0.30629893,
       "avg_duration_seconds": 155.55027089684697,
       "cooldown_until": 1777655146.3757148,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "XPL/USDT:USDT": {
       "symbol": "XPL/USDT:USDT",
@@ -334,7 +357,8 @@
       "pnl_squared_sum": 0.0015987399999999998,
       "avg_duration_seconds": 1230.5992271900177,
       "cooldown_until": 1777655146.3770866,
-      "last_close_reason": "spike_close"
+      "last_close_reason": "spike_close",
+      "imbalance_close_ts": []
     },
     "AXS/USDT:USDT": {
       "symbol": "AXS/USDT:USDT",
@@ -348,7 +372,8 @@
       "pnl_squared_sum": 0.00023817999999999997,
       "avg_duration_seconds": 1217.166120815277,
       "cooldown_until": 1777655146.3771544,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "FARTCOIN/USDT:USDT": {
       "symbol": "FARTCOIN/USDT:USDT",
@@ -362,7 +387,8 @@
       "pnl_squared_sum": 0.00134278,
       "avg_duration_seconds": 1042.7592373371124,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "XAU/USDT:USDT": {
       "symbol": "XAU/USDT:USDT",
@@ -376,21 +402,23 @@
       "pnl_squared_sum": 0.0007720199999999999,
       "avg_duration_seconds": 1252.5919651031495,
       "cooldown_until": 1777655146.3763437,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ENA/USDT:USDT": {
       "symbol": "ENA/USDT:USDT",
-      "trades": 18,
+      "trades": 20,
       "wins": 14,
-      "losses": 4,
-      "recent_failures": 1,
-      "total_pnl": 0.583,
+      "losses": 6,
+      "recent_failures": 3,
+      "total_pnl": 0.5891,
       "total_win_pnl": 0.5797000000000001,
       "total_loss_abs": 0.0294,
-      "pnl_squared_sum": 0.07258728000000002,
-      "avg_duration_seconds": 983.1016138262219,
-      "cooldown_until": 0.0,
-      "last_close_reason": "no_fills_timeout"
+      "pnl_squared_sum": 0.07262449000000001,
+      "avg_duration_seconds": 1020.1173105120658,
+      "cooldown_until": 1779583835.77958,
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "XLM/USDT:USDT": {
       "symbol": "XLM/USDT:USDT",
@@ -404,7 +432,8 @@
       "pnl_squared_sum": 0.0006192999999999999,
       "avg_duration_seconds": 1191.1661990710668,
       "cooldown_until": 1777655146.3768775,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "API3/USDT:USDT": {
       "symbol": "API3/USDT:USDT",
@@ -418,7 +447,8 @@
       "pnl_squared_sum": 0.01656763,
       "avg_duration_seconds": 610.6613038778307,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "HBAR/USDT:USDT": {
       "symbol": "HBAR/USDT:USDT",
@@ -432,7 +462,8 @@
       "pnl_squared_sum": 4e-08,
       "avg_duration_seconds": 684.0067087014517,
       "cooldown_until": 1777736992.0832093,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "AIGENSYN/USDT:USDT": {
       "symbol": "AIGENSYN/USDT:USDT",
@@ -446,7 +477,8 @@
       "pnl_squared_sum": 0.22581187,
       "avg_duration_seconds": 116.85716118176778,
       "cooldown_until": 1777655146.3772728,
-      "last_close_reason": "spike_close"
+      "last_close_reason": "spike_close",
+      "imbalance_close_ts": []
     },
     "ARB/USDT:USDT": {
       "symbol": "ARB/USDT:USDT",
@@ -460,7 +492,8 @@
       "pnl_squared_sum": 0.0178776,
       "avg_duration_seconds": 846.729500403771,
       "cooldown_until": 1777655146.3774626,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "BIO/USDT:USDT": {
       "symbol": "BIO/USDT:USDT",
@@ -474,7 +507,8 @@
       "pnl_squared_sum": 0.08447864000000001,
       "avg_duration_seconds": 304.23300477999067,
       "cooldown_until": 1777761911.8025143,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "XAUT/USDT:USDT": {
       "symbol": "XAUT/USDT:USDT",
@@ -488,7 +522,8 @@
       "pnl_squared_sum": 0.00081387,
       "avg_duration_seconds": 1025.0461741447448,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "DOGE/USDT:USDT": {
       "symbol": "DOGE/USDT:USDT",
@@ -502,21 +537,23 @@
       "pnl_squared_sum": 0.00042966,
       "avg_duration_seconds": 782.655327129364,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "WLD/USDT:USDT": {
       "symbol": "WLD/USDT:USDT",
-      "trades": 5,
+      "trades": 6,
       "wins": 3,
-      "losses": 2,
-      "recent_failures": 0,
+      "losses": 3,
+      "recent_failures": 1,
       "total_pnl": 0.012,
       "total_win_pnl": 0.0357,
       "total_loss_abs": 0.0237,
       "pnl_squared_sum": 0.0009691000000000001,
-      "avg_duration_seconds": 1162.0992303848266,
+      "avg_duration_seconds": 974.6089065074921,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "AAVE/USDT:USDT": {
       "symbol": "AAVE/USDT:USDT",
@@ -530,7 +567,8 @@
       "pnl_squared_sum": 0.05834990999999999,
       "avg_duration_seconds": 272.82587737914844,
       "cooldown_until": 1777758151.738353,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "OPG/USDT:USDT": {
       "symbol": "OPG/USDT:USDT",
@@ -544,7 +582,8 @@
       "pnl_squared_sum": 0.0374613,
       "avg_duration_seconds": 319.13801418522667,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "WIF/USDT:USDT": {
       "symbol": "WIF/USDT:USDT",
@@ -558,7 +597,8 @@
       "pnl_squared_sum": 2.3850703699999998,
       "avg_duration_seconds": 592.942895797834,
       "cooldown_until": 1777761387.5960174,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "PENGU/USDT:USDT": {
       "symbol": "PENGU/USDT:USDT",
@@ -572,7 +612,8 @@
       "pnl_squared_sum": 0.00301645,
       "avg_duration_seconds": 752.8650821096757,
       "cooldown_until": 1777655146.3762274,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "1000PEPE/USDT:USDT": {
       "symbol": "1000PEPE/USDT:USDT",
@@ -586,7 +627,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 902.0342716217041,
       "cooldown_until": 1777655146.3772275,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "1000BONK/USDT:USDT": {
       "symbol": "1000BONK/USDT:USDT",
@@ -600,7 +642,8 @@
       "pnl_squared_sum": 0.0005712100000000001,
       "avg_duration_seconds": 836.2157546997071,
       "cooldown_until": 1777655146.3772292,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "CL/USDT:USDT": {
       "symbol": "CL/USDT:USDT",
@@ -614,7 +657,8 @@
       "pnl_squared_sum": 0.017928219999999998,
       "avg_duration_seconds": 1548.7596508026122,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "AKE/USDT:USDT": {
       "symbol": "AKE/USDT:USDT",
@@ -628,7 +672,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 721.1167253255844,
       "cooldown_until": 1777655146.3767893,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "WLFI/USDT:USDT": {
       "symbol": "WLFI/USDT:USDT",
@@ -642,7 +687,8 @@
       "pnl_squared_sum": 1.3291335499999999,
       "avg_duration_seconds": 294.9131625346767,
       "cooldown_until": 1777758193.0017977,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "CRV/USDT:USDT": {
       "symbol": "CRV/USDT:USDT",
@@ -656,7 +702,8 @@
       "pnl_squared_sum": 0.00054086,
       "avg_duration_seconds": 1091.9381543159484,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "SHIB1000/USDT:USDT": {
       "symbol": "SHIB1000/USDT:USDT",
@@ -670,7 +717,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 901.5367032051087,
       "cooldown_until": 1777655146.377272,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "RIVER/USDT:USDT": {
       "symbol": "RIVER/USDT:USDT",
@@ -684,7 +732,8 @@
       "pnl_squared_sum": 1.21641763,
       "avg_duration_seconds": 401.7308877072436,
       "cooldown_until": 0.0,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "PUMPFUN/USDT:USDT": {
       "symbol": "PUMPFUN/USDT:USDT",
@@ -698,7 +747,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 901.7579472064972,
       "cooldown_until": 1777655146.3773043,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "XMR/USDT:USDT": {
       "symbol": "XMR/USDT:USDT",
@@ -712,7 +762,8 @@
       "pnl_squared_sum": 0.00064725,
       "avg_duration_seconds": 767.2815383161817,
       "cooldown_until": 0.0,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "ZBT/USDT:USDT": {
       "symbol": "ZBT/USDT:USDT",
@@ -726,7 +777,8 @@
       "pnl_squared_sum": 0.03843746,
       "avg_duration_seconds": 345.89641305575003,
       "cooldown_until": 1777655146.3772695,
-      "last_close_reason": "spike_close"
+      "last_close_reason": "spike_close",
+      "imbalance_close_ts": []
     },
     "TIA/USDT:USDT": {
       "symbol": "TIA/USDT:USDT",
@@ -740,7 +792,8 @@
       "pnl_squared_sum": 0.00010877,
       "avg_duration_seconds": 1427.0402842760086,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "TRB/USDT:USDT": {
       "symbol": "TRB/USDT:USDT",
@@ -754,7 +807,8 @@
       "pnl_squared_sum": 0.04928782999999999,
       "avg_duration_seconds": 427.69763615045184,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "TRUMP/USDT:USDT": {
       "symbol": "TRUMP/USDT:USDT",
@@ -768,7 +822,8 @@
       "pnl_squared_sum": 0.00042720999999999997,
       "avg_duration_seconds": 1193.7883158683776,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "VVV/USDT:USDT": {
       "symbol": "VVV/USDT:USDT",
@@ -782,7 +837,8 @@
       "pnl_squared_sum": 0.03444457000000001,
       "avg_duration_seconds": 561.3196203247195,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "TAO/USDT:USDT": {
       "symbol": "TAO/USDT:USDT",
@@ -796,7 +852,8 @@
       "pnl_squared_sum": 0.0174034,
       "avg_duration_seconds": 1011.1017883777619,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "NEAR/USDT:USDT": {
       "symbol": "NEAR/USDT:USDT",
@@ -810,7 +867,8 @@
       "pnl_squared_sum": 4.571000000000001e-05,
       "avg_duration_seconds": 1622.3426183223723,
       "cooldown_until": 1777661482.1131516,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "APT/USDT:USDT": {
       "symbol": "APT/USDT:USDT",
@@ -824,7 +882,8 @@
       "pnl_squared_sum": 0.0007457,
       "avg_duration_seconds": 1153.4095780849457,
       "cooldown_until": 1777655146.3766334,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "POL/USDT:USDT": {
       "symbol": "POL/USDT:USDT",
@@ -838,21 +897,23 @@
       "pnl_squared_sum": 0.005992189999999999,
       "avg_duration_seconds": 1039.3487379550934,
       "cooldown_until": 0.0,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "INJ/USDT:USDT": {
       "symbol": "INJ/USDT:USDT",
-      "trades": 5,
+      "trades": 6,
       "wins": 3,
-      "losses": 2,
-      "recent_failures": 0,
+      "losses": 3,
+      "recent_failures": 1,
       "total_pnl": 0.008900000000000002,
       "total_win_pnl": 0.035699999999999996,
       "total_loss_abs": 0.0338,
       "pnl_squared_sum": 0.0016379499999999996,
-      "avg_duration_seconds": 978.5713269233704,
+      "avg_duration_seconds": 821.6261025269827,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "TAC/USDT:USDT": {
       "symbol": "TAC/USDT:USDT",
@@ -866,7 +927,8 @@
       "pnl_squared_sum": 0.12238048,
       "avg_duration_seconds": 350.8780518770218,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "EDGE/USDT:USDT": {
       "symbol": "EDGE/USDT:USDT",
@@ -880,7 +942,8 @@
       "pnl_squared_sum": 0.003832500000000001,
       "avg_duration_seconds": 466.0048393954833,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ORCA/USDT:USDT": {
       "symbol": "ORCA/USDT:USDT",
@@ -894,7 +957,8 @@
       "pnl_squared_sum": 0.3323964899999999,
       "avg_duration_seconds": 232.18291375965902,
       "cooldown_until": 1777655146.3769574,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "LDO/USDT:USDT": {
       "symbol": "LDO/USDT:USDT",
@@ -908,7 +972,8 @@
       "pnl_squared_sum": 0.11091176,
       "avg_duration_seconds": 912.9508050221664,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "AXL/USDT:USDT": {
       "symbol": "AXL/USDT:USDT",
@@ -922,21 +987,23 @@
       "pnl_squared_sum": 0.012999210000000008,
       "avg_duration_seconds": 303.1888193377742,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "ZEC/USDT:USDT": {
       "symbol": "ZEC/USDT:USDT",
-      "trades": 18,
+      "trades": 21,
       "wins": 14,
-      "losses": 4,
-      "recent_failures": 3,
+      "losses": 7,
+      "recent_failures": 6,
       "total_pnl": 0.1612,
       "total_win_pnl": 0.15130000000000002,
       "total_loss_abs": 0.0,
       "pnl_squared_sum": 0.004827400000000001,
-      "avg_duration_seconds": 362.25198770893945,
-      "cooldown_until": 1777737277.9200764,
-      "last_close_reason": "price_bus_error"
+      "avg_duration_seconds": 355.36840564864025,
+      "cooldown_until": 1779581861.3535335,
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "DYDX/USDT:USDT": {
       "symbol": "DYDX/USDT:USDT",
@@ -950,7 +1017,8 @@
       "pnl_squared_sum": 1.3802055500000001,
       "avg_duration_seconds": 866.1020399093628,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "PAXG/USDT:USDT": {
       "symbol": "PAXG/USDT:USDT",
@@ -964,7 +1032,8 @@
       "pnl_squared_sum": 0.00890864,
       "avg_duration_seconds": 1273.230014848709,
       "cooldown_until": 0.0,
-      "last_close_reason": "no_fills_timeout"
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "M/USDT:USDT": {
       "symbol": "M/USDT:USDT",
@@ -978,7 +1047,8 @@
       "pnl_squared_sum": 2.57916824,
       "avg_duration_seconds": 264.37991979215053,
       "cooldown_until": 1777762107.489503,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "OP/USDT:USDT": {
       "symbol": "OP/USDT:USDT",
@@ -992,7 +1062,8 @@
       "pnl_squared_sum": 0.05336085,
       "avg_duration_seconds": 898.581623421775,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "DASH/USDT:USDT": {
       "symbol": "DASH/USDT:USDT",
@@ -1006,7 +1077,8 @@
       "pnl_squared_sum": 3.67802883,
       "avg_duration_seconds": 266.8649676640828,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "ZEREBRO/USDT:USDT": {
       "symbol": "ZEREBRO/USDT:USDT",
@@ -1020,7 +1092,8 @@
       "pnl_squared_sum": 1.229684,
       "avg_duration_seconds": 94.5803941317967,
       "cooldown_until": 0.0,
-      "last_close_reason": "drawdown"
+      "last_close_reason": "drawdown",
+      "imbalance_close_ts": []
     },
     "NAORIS/USDT:USDT": {
       "symbol": "NAORIS/USDT:USDT",
@@ -1034,7 +1107,8 @@
       "pnl_squared_sum": 0.41688729,
       "avg_duration_seconds": 102.6308364868164,
       "cooldown_until": 0.0,
-      "last_close_reason": "drawdown"
+      "last_close_reason": "drawdown",
+      "imbalance_close_ts": []
     },
     "KNC/USDT:USDT": {
       "symbol": "KNC/USDT:USDT",
@@ -1048,7 +1122,8 @@
       "pnl_squared_sum": 0.030802660000000003,
       "avg_duration_seconds": 283.42026376724243,
       "cooldown_until": 1777760349.8936217,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "BR/USDT:USDT": {
       "symbol": "BR/USDT:USDT",
@@ -1062,7 +1137,8 @@
       "pnl_squared_sum": 0.2666220000000001,
       "avg_duration_seconds": 310.627289891243,
       "cooldown_until": 0.0,
-      "last_close_reason": "timeout"
+      "last_close_reason": "timeout",
+      "imbalance_close_ts": []
     },
     "KAVA/USDT:USDT": {
       "symbol": "KAVA/USDT:USDT",
@@ -1076,7 +1152,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 260.7567102909088,
       "cooldown_until": 1777737811.7965252,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "IRYS/USDT:USDT": {
       "symbol": "IRYS/USDT:USDT",
@@ -1090,7 +1167,8 @@
       "pnl_squared_sum": 1.2080059,
       "avg_duration_seconds": 353.44034972190855,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "ZEN/USDT:USDT": {
       "symbol": "ZEN/USDT:USDT",
@@ -1104,7 +1182,8 @@
       "pnl_squared_sum": 0.7573532900000001,
       "avg_duration_seconds": 404.16106739640236,
       "cooldown_until": 0.0,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "KAT/USDT:USDT": {
       "symbol": "KAT/USDT:USDT",
@@ -1118,7 +1197,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 316.2955594062805,
       "cooldown_until": 0.0,
-      "last_close_reason": "heartbeat_stale_price"
+      "last_close_reason": "heartbeat_stale_price",
+      "imbalance_close_ts": []
     },
     "UNI/USDT:USDT": {
       "symbol": "UNI/USDT:USDT",
@@ -1132,7 +1212,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "SPK/USDT:USDT": {
       "symbol": "SPK/USDT:USDT",
@@ -1146,7 +1227,8 @@
       "pnl_squared_sum": 0.07434247,
       "avg_duration_seconds": 704.9015800476075,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "BEAT/USDT:USDT": {
       "symbol": "BEAT/USDT:USDT",
@@ -1160,7 +1242,8 @@
       "pnl_squared_sum": 7.4058939100000005,
       "avg_duration_seconds": 423.8584854602814,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "PIEVERSE/USDT:USDT": {
       "symbol": "PIEVERSE/USDT:USDT",
@@ -1174,21 +1257,23 @@
       "pnl_squared_sum": 0.40580582,
       "avg_duration_seconds": 387.5730137348175,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "BTC/USDT:USDT": {
       "symbol": "BTC/USDT:USDT",
-      "trades": 0,
+      "trades": 4,
       "wins": 0,
-      "losses": 0,
-      "recent_failures": 0,
+      "losses": 4,
+      "recent_failures": 4,
       "total_pnl": 0.0,
       "total_win_pnl": 0.0,
       "total_loss_abs": 0.0,
       "pnl_squared_sum": 0.0,
-      "avg_duration_seconds": 0.0,
-      "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "avg_duration_seconds": 436.8870338797569,
+      "cooldown_until": 1779581732.404712,
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "ETH/USDT:USDT": {
       "symbol": "ETH/USDT:USDT",
@@ -1202,7 +1287,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "SOL/USDT:USDT": {
       "symbol": "SOL/USDT:USDT",
@@ -1216,7 +1302,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "XRP/USDT:USDT": {
       "symbol": "XRP/USDT:USDT",
@@ -1230,21 +1317,23 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "ADA/USDT:USDT": {
       "symbol": "ADA/USDT:USDT",
-      "trades": 0,
+      "trades": 1,
       "wins": 0,
-      "losses": 0,
-      "recent_failures": 0,
+      "losses": 1,
+      "recent_failures": 1,
       "total_pnl": 0.0,
       "total_win_pnl": 0.0,
       "total_loss_abs": 0.0,
       "pnl_squared_sum": 0.0,
-      "avg_duration_seconds": 0.0,
+      "avg_duration_seconds": 903.8098504543304,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "no_fills_timeout",
+      "imbalance_close_ts": []
     },
     "LINK/USDT:USDT": {
       "symbol": "LINK/USDT:USDT",
@@ -1258,7 +1347,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "DOT/USDT:USDT": {
       "symbol": "DOT/USDT:USDT",
@@ -1272,7 +1362,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "LTC/USDT:USDT": {
       "symbol": "LTC/USDT:USDT",
@@ -1286,7 +1377,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "AVAX/USDT:USDT": {
       "symbol": "AVAX/USDT:USDT",
@@ -1300,7 +1392,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "TRX/USDT:USDT": {
       "symbol": "TRX/USDT:USDT",
@@ -1314,7 +1407,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "BNB/USDT:USDT": {
       "symbol": "BNB/USDT:USDT",
@@ -1328,7 +1422,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "BCH/USDT:USDT": {
       "symbol": "BCH/USDT:USDT",
@@ -1342,7 +1437,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "TON/USDT:USDT": {
       "symbol": "TON/USDT:USDT",
@@ -1356,7 +1452,8 @@
       "pnl_squared_sum": 0.0,
       "avg_duration_seconds": 0.0,
       "cooldown_until": 0.0,
-      "last_close_reason": ""
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     },
     "PNUT/USDT:USDT": {
       "symbol": "PNUT/USDT:USDT",
@@ -1370,7 +1467,8 @@
       "pnl_squared_sum": 0.16284999,
       "avg_duration_seconds": 242.17575478553772,
       "cooldown_until": 0.0,
-      "last_close_reason": "target_hit"
+      "last_close_reason": "target_hit",
+      "imbalance_close_ts": []
     },
     "CHILLGUY/USDT:USDT": {
       "symbol": "CHILLGUY/USDT:USDT",
@@ -1384,7 +1482,8 @@
       "pnl_squared_sum": 1.6816137,
       "avg_duration_seconds": 25.15482096672058,
       "cooldown_until": 0.0,
-      "last_close_reason": "drawdown"
+      "last_close_reason": "drawdown",
+      "imbalance_close_ts": []
     },
     "ASTER/USDT:USDT": {
       "symbol": "ASTER/USDT:USDT",
@@ -1398,7 +1497,8 @@
       "pnl_squared_sum": 0.029361779999999997,
       "avg_duration_seconds": 579.1316874027252,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "ALGO/USDT:USDT": {
       "symbol": "ALGO/USDT:USDT",
@@ -1412,7 +1512,8 @@
       "pnl_squared_sum": 0.01474377,
       "avg_duration_seconds": 271.67289514541625,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
     },
     "ZK/USDT:USDT": {
       "symbol": "ZK/USDT:USDT",
@@ -1426,7 +1527,38 @@
       "pnl_squared_sum": 0.1197125,
       "avg_duration_seconds": 183.89549028873444,
       "cooldown_until": 0.0,
-      "last_close_reason": "agent_close"
+      "last_close_reason": "agent_close",
+      "imbalance_close_ts": []
+    },
+    "GMT/USDT:USDT": {
+      "symbol": "GMT/USDT:USDT",
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "recent_failures": 0,
+      "total_pnl": 0.0,
+      "total_win_pnl": 0.0,
+      "total_loss_abs": 0.0,
+      "pnl_squared_sum": 0.0,
+      "avg_duration_seconds": 0.0,
+      "cooldown_until": 0.0,
+      "last_close_reason": "",
+      "imbalance_close_ts": []
+    },
+    "EDEN/USDT:USDT": {
+      "symbol": "EDEN/USDT:USDT",
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "recent_failures": 0,
+      "total_pnl": 0.0,
+      "total_win_pnl": 0.0,
+      "total_loss_abs": 0.0,
+      "pnl_squared_sum": 0.0,
+      "avg_duration_seconds": 0.0,
+      "cooldown_until": 0.0,
+      "last_close_reason": "",
+      "imbalance_close_ts": []
     }
   }
 }
