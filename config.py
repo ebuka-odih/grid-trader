@@ -33,8 +33,9 @@ MAX_TOTAL_WALLET_EXPOSURE_PCT = _env_float("MAX_TOTAL_WALLET_EXPOSURE_PCT", 60)
 TOKEN_PROFILES_PATH = os.getenv("TOKEN_PROFILES_PATH", "token_profiles.json")
 
 # --- Grid Strategy (defaults, overridden by token_profiles.json) ---
-# High-frequency cross-margin policy: keep leverage high for fast movement while
-# limiting wallet risk through reserved margin size, not low leverage.
+# High-frequency cross-margin policy: keep leverage at extreme for dry-run
+# speed testing. Wallet risk is managed through reserved margin size, not leverage.
+# 100x is Bybit's max — the exchange caps per symbol below that if unsupported.
 #
 # Single source of truth for leverage policy:
 # - Global operating band comes from MIN_SAFE_LEVERAGE / MAX_SAFE_LEVERAGE.
@@ -42,7 +43,7 @@ TOKEN_PROFILES_PATH = os.getenv("TOKEN_PROFILES_PATH", "token_profiles.json")
 #   runtime_config.json overlays still work, but the rest of the code should
 #   read the canonical values/helpers below instead of re-reading env vars.
 _RAW_MIN_SAFE_LEVERAGE = _env_int("MIN_SAFE_LEVERAGE", _env_int("MIN_DEPLOY_LEVERAGE", 30))
-_RAW_MAX_SAFE_LEVERAGE = _env_int("MAX_SAFE_LEVERAGE", _env_int("MAX_DEPLOY_LEVERAGE", 50))
+_RAW_MAX_SAFE_LEVERAGE = _env_int("MAX_SAFE_LEVERAGE", _env_int("MAX_DEPLOY_LEVERAGE", 100))
 if _RAW_MAX_SAFE_LEVERAGE < _RAW_MIN_SAFE_LEVERAGE:
     _RAW_MAX_SAFE_LEVERAGE = _RAW_MIN_SAFE_LEVERAGE
 
@@ -66,7 +67,7 @@ def clamp_leverage(value: int | float | str | None, *, minimum: int | None = Non
     return max(min_allowed, min(max_allowed, raw))
 
 
-DEFAULT_LEVERAGE = clamp_leverage(_env_int("DEFAULT_LEVERAGE", 30))
+DEFAULT_LEVERAGE = clamp_leverage(_env_int("DEFAULT_LEVERAGE", 100))
 DEFAULT_NUM_GRIDS = _env_int("DEFAULT_NUM_GRIDS", 10)
 MAX_TRADE_WALLET_EXPOSURE_PCT = _env_float("MAX_TRADE_WALLET_EXPOSURE_PCT", 10.0)
 MIN_ORDER_SIZE_USDT = _env_float("MIN_ORDER_SIZE_USDT", 0.1)
