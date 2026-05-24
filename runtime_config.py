@@ -87,31 +87,31 @@ CONFIG_SCHEMA: dict[str, FieldSpec] = {
         category="sizing", label="Base order size (USDT)",
         help="Notional per grid level. With leverage=50 and size=$10, margin per fill is $0.20."),
     "MAX_CONCURRENT_GRIDS": FieldSpec(
-        type="int", default=50, min=1, max=200,
+        type="int", default=500, min=1, max=999,
         category="sizing", label="Max concurrent grids",
         help="Cap on simultaneously active grid slots."),
     "DEFAULT_LEVERAGE": FieldSpec(
-        type="int", default=30, min=1, max=125,
+        type="int", default=100, min=1, max=125,
         category="sizing", label="Default leverage",
         help="Per-symbol leverage when not overridden by token profile."),
     "MIN_SAFE_LEVERAGE": FieldSpec(
-        type="int", default=30, min=1, max=125,
+        type="int", default=10, min=1, max=125,
         category="sizing", label="Min safe leverage",
         help="Lower clamp for allowed leverage values."),
     "MAX_SAFE_LEVERAGE": FieldSpec(
-        type="int", default=50, min=1, max=125,
+        type="int", default=100, min=1, max=125,
         category="sizing", label="Max safe leverage",
         help="Upper clamp for allowed leverage values."),
     "MIN_DEPLOY_LEVERAGE": FieldSpec(
-        type="int", default=30, min=1, max=125,
+        type="int", default=10, min=1, max=125,
         category="sizing", label="Min deploy leverage (legacy alias)",
         help="Legacy alias for MIN_SAFE_LEVERAGE; kept for backward-compatible overlays."),
     "MAX_DEPLOY_LEVERAGE": FieldSpec(
-        type="int", default=50, min=1, max=125,
+        type="int", default=100, min=1, max=125,
         category="sizing", label="Max deploy leverage (legacy alias)",
         help="Legacy alias for MAX_SAFE_LEVERAGE; kept for backward-compatible overlays."),
     "MAX_SCANNER_LEVERAGE": FieldSpec(
-        type="int", default=50, min=1, max=125,
+        type="int", default=100, min=1, max=125,
         category="sizing", label="Scanner max leverage",
         help="Caps leverage suggested by scanner decisions."),
     "TARGET_WALLET_EXPOSURE_PCT": FieldSpec(
