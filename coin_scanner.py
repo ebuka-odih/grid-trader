@@ -346,7 +346,15 @@ class CoinScanner:
             pullback_depth_pct=pullback_depth_pct,
         )
 
-        atr_based_leverage = int(90 / (atr_pct + 0.5))
+        regime_multiplier = {
+            "trending_up": 1.2,
+            "trending_down": 1.2,
+            "ranging": 0.8,
+            "volatile": 0.6,
+        }.get(market_regime, 1.0)
+
+        alignment_boost = 1.0 + max(0, alignment_score * 0.3)
+        atr_based_leverage = int(90 / (atr_pct + 0.5) * regime_multiplier * alignment_boost)
         suggested_leverage = clamp_leverage(atr_based_leverage, maximum=MAX_SCANNER_LEVERAGE)
 
         return CoinScore(

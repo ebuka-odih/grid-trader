@@ -494,7 +494,7 @@ class SmokeBlockerRegressionTests(unittest.TestCase):
         self.assertEqual(decision.symbol, "BTC/USDT:USDT")
         self.assertEqual(decision.direction, "long")
         self.assertEqual(decision.market_regime, "ranging")
-        self.assertEqual(decision.leverage, 10)
+        self.assertEqual(decision.leverage, 12)
         self.assertEqual(decision.num_grids, 10)
         self.assertEqual(decision.confidence, 0.84)
 
