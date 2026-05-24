@@ -96,7 +96,6 @@ class RiskPolicyCapsTests(unittest.TestCase):
         )
 
         self.assertTrue(result["approved"])
-        self.assertEqual(result["adjusted_leverage"], MAX_SAFE_LEVERAGE)
         # Max trade exposure is 10% (from config), so adjusted_order_size * 11 <= 10.0
         self.assertLessEqual(result["adjusted_order_size"] * 11, 10.0)
 

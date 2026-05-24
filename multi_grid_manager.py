@@ -2095,6 +2095,10 @@ class MultiGridManager:
         """
         Select coins algorithmically using scanner scores + diversification.
         No LLM involved — pure rule-based selection with sector diversification.
+
+        Edge positioning: for high-MR ranging coins, deploys BOTH a LONG grid
+        (below price — buy dips) and a SHORT grid (above price — sell rips).
+        Each edge is an independent slot with its own grid range and risk.
         """
         if not available or num_picks <= 0:
             return []
@@ -2116,6 +2120,11 @@ class MultiGridManager:
         sector_counts: dict[str, int] = {}
         picks: list[PreTradeDecision] = []
 
+        # Thresholds for edge detection
+        MR_THRESHOLD = 0.95       # mean-reversion score for dual-direction
+        ATTR_ATR_MULTIPLIER = 2.0  # ATR multiplier for grid range
+        DIRECTIONAL_SKEW = 0.5     # how far from price the directional zone starts
+
         for score, coin, sector in scored:
             if len(picks) >= num_picks:
                 break
@@ -2128,30 +2137,126 @@ class MultiGridManager:
             profile = self.risk_monitor.get_token_profile(coin.symbol)
             profile_order_size = profile.get("order_size_usdt", 5.0)
 
-            decision = build_scanner_candidate_decision(
-                coin,
-                token_profile=profile,
-                wallet_balance=wallet_balance,
-            )
-            decision.reasoning = (
-                f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
-                f"deploy_score={getattr(coin, 'deploy_score', score):.3f} score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
-                f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
-            )
-            decision.narrative = (
-                f"{sector} sector, {decision.market_regime} regime, {coin.atr_pct:.1f}% ATR"
-            )
-            picks.append(decision)
-            sector_counts[sector] = current_count + 1
+            # --- Edge detection: determine which directions to deploy ---
+            price = coin.price
+            atr = coin.atr_pct / 100.0 if coin.atr_pct > 0 else 0.002
+            mr = coin.mean_reversion_score
+            trend = getattr(coin, "trend_direction", "neutral") or "neutral"
 
-            logger.info(
-                f"📊 ALGO PICK: {decision.symbol} | dir={decision.direction} | "
-                f"sector={sector} | style={getattr(coin, 'grid_style', 'unknown')} | deploy_score={score:.3f} | score={coin.grid_score:.3f} | "
-                f"mr={coin.mean_reversion_score:.2f} | trend={coin.trend_direction} | "
-                f"regime={decision.market_regime} | conf={decision.confidence:.2f} | "
-                f"grid={decision.lower:.4f}-{decision.upper:.4f} | "
-                f"grids={decision.num_grids} | lev={decision.leverage}x"
-            )
+            # A coin qualifies for dual-direction if it's strongly mean-reverting
+            # and not trending strongly in one direction
+            qualifies_for_dual = mr > MR_THRESHOLD and trend in ("neutral", "long", "short")
+
+            if qualifies_for_dual and mr > MR_THRESHOLD:
+                # ── Deploy BOTH a long grid and a short grid ──
+
+                # LONG grid: buy zone below current price
+                long_upper = price * (1.0 - atr * DIRECTIONAL_SKEW)
+                long_lower = price * (1.0 - atr * ATTR_ATR_MULTIPLIER)
+                long_grids = normalize_grid_density(max(6, min(int(coin.suggested_grids or 10), 12)), wallet_balance=wallet_balance)
+
+                long_coin = CoinScore(
+                    symbol=coin.symbol, price=coin.price,
+                    high_24h=coin.high_24h, low_24h=coin.low_24h,
+                    volume_24h_usdt=coin.volume_24h_usdt,
+                    atr_pct=coin.atr_pct, range_pct=coin.range_pct,
+                    mean_reversion_score=coin.mean_reversion_score,
+                    grid_score=coin.grid_score,
+                    suggested_upper=round(long_upper, max(2, 8 - int(price))),
+                    suggested_lower=round(long_lower, max(2, 8 - int(price))),
+                    suggested_grids=long_grids,
+                    suggested_leverage=coin.suggested_leverage or DEFAULT_LEVERAGE,
+                    entry_quality_score=coin.entry_quality_score,
+                    trend_direction="long",
+                )
+
+                long_decision = build_scanner_candidate_decision(
+                    long_coin,
+                    token_profile=profile,
+                    wallet_balance=wallet_balance,
+                )
+                long_decision.reasoning = (
+                    f"Long edge: style={getattr(coin, 'grid_style', 'unknown')} "
+                    f"mr={mr:.2f} dip zone ${long_lower:.4f}-${long_upper:.4f}"
+                )
+                long_decision.narrative = (
+                    f"{sector} sector, {_candidate_market_regime(coin)} regime, {coin.atr_pct:.1f}% ATR — LONG edge"
+                )
+                picks.append(long_decision)
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+                # SHORT grid: sell zone above current price
+                short_lower = price * (1.0 + atr * DIRECTIONAL_SKEW)
+                short_upper = price * (1.0 + atr * ATTR_ATR_MULTIPLIER)
+                short_grids = normalize_grid_density(max(6, min(int(coin.suggested_grids or 10), 12)), wallet_balance=wallet_balance)
+
+                short_coin = CoinScore(
+                    symbol=coin.symbol, price=coin.price,
+                    high_24h=coin.high_24h, low_24h=coin.low_24h,
+                    volume_24h_usdt=coin.volume_24h_usdt,
+                    atr_pct=coin.atr_pct, range_pct=coin.range_pct,
+                    mean_reversion_score=coin.mean_reversion_score,
+                    grid_score=coin.grid_score,
+                    suggested_upper=round(short_upper, max(2, 8 - int(price))),
+                    suggested_lower=round(short_lower, max(2, 8 - int(price))),
+                    suggested_grids=short_grids,
+                    suggested_leverage=coin.suggested_leverage or DEFAULT_LEVERAGE,
+                    entry_quality_score=coin.entry_quality_score,
+                    trend_direction="short",
+                )
+
+                short_decision = build_scanner_candidate_decision(
+                    short_coin,
+                    token_profile=profile,
+                    wallet_balance=wallet_balance,
+                )
+                short_decision.reasoning = (
+                    f"Short edge: style={getattr(coin, 'grid_style', 'unknown')} "
+                    f"mr={mr:.2f} rip zone ${short_lower:.4f}-${short_upper:.4f}"
+                )
+                short_decision.narrative = (
+                    f"{sector} sector, {_candidate_market_regime(coin)} regime, {coin.atr_pct:.1f}% ATR — SHORT edge"
+                )
+                picks.append(short_decision)
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+                logger.info(
+                    f"📊 EDGE PAIR: {coin.symbol} | LONG=${long_lower:.4f}-${long_upper:.4f} | "
+                    f"SHORT=${short_lower:.4f}-${short_upper:.4f} | mr={mr:.2f} | "
+                    f"atr={coin.atr_pct:.2f}% | sector={sector} | "
+                    f"long_grids={long_grids} | short_grids={short_grids}"
+                )
+
+            else:
+                # ── Single direction or neutral (current behaviour) ──
+                decision = build_scanner_candidate_decision(
+                    coin,
+                    token_profile=profile,
+                    wallet_balance=wallet_balance,
+                )
+                direction_label = getattr(decision, "direction", "neutral") or "neutral"
+                decision.reasoning = (
+                    f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
+                    f"deploy_score={getattr(coin, 'deploy_score', score):.3f} score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
+                    f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
+                )
+                decision.narrative = (
+                    f"{sector} sector, {decision.market_regime} regime, {coin.atr_pct:.1f}% ATR"
+                )
+                picks.append(decision)
+                sector_counts[sector] = current_count + 1
+
+            # Log the most recent pick
+            pick_info = picks[-1]
+            if pick_info:
+                logger.info(
+                    f"📊 ALGO PICK: {pick_info.symbol} | dir={pick_info.direction} | "
+                    f"sector={sector} | style={getattr(coin, 'grid_style', 'unknown')} | deploy_score={score:.3f} | score={coin.grid_score:.3f} | "
+                    f"mr={coin.mean_reversion_score:.2f} | trend={coin.trend_direction} | "
+                    f"regime={pick_info.market_regime} | conf={pick_info.confidence:.2f} | "
+                    f"grid={pick_info.lower:.4f}-{pick_info.upper:.4f} | "
+                    f"grids={pick_info.num_grids} | lev={pick_info.leverage}x"
+                )
 
         return picks
 
