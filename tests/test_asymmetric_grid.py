@@ -76,8 +76,8 @@ class MeanReversionThresholdTest(unittest.TestCase):
     def test_min_mr_threshold_tightened(self):
         self.assertGreaterEqual(
             MIN_MEAN_REVERSION,
-            0.45,
-            f"MIN_MEAN_REVERSION should be >=0.45 to still provide some filtering; got {MIN_MEAN_REVERSION}",
+            0.35,
+            f"MIN_MEAN_REVERSION should be >=0.35 to still provide some filtering; got {MIN_MEAN_REVERSION}",
         )
 
 

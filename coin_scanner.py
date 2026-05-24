@@ -97,6 +97,9 @@ class CoinScanner:
         else:
             self.exchange = ccxt.bybit({**exchange_opts, "options": {"defaultType": "linear"}})
         self.learning = learning or ScannerLearning()
+        # Semaphore limits concurrent coin scoring to stay under Bybit rate limits.
+        # 3 concurrent coins × 3 candle frames = 9 max concurrent API calls.
+        self._rate_limiter = asyncio.Semaphore(3)
 
     async def close(self):
         if getattr(self, "exchange", None) is not None:
@@ -414,45 +417,49 @@ class CoinScanner:
             return False, f"not mean-reverting enough (mr={score.mean_reversion_score:.2f} < {MIN_MEAN_REVERSION})"
         return True, "passed"
 
-    async def scan(self) -> list[CoinScore]:
-        """
-        Run a full scan: fetch tickers, score each coin, apply safety filters, return ranked results.
-        """
-        tickers = await self.fetch_tickers()
-        raw_scores: list[CoinScore] = []
-        filtered_out: list[tuple[str, str]] = []
-
-        for ticker in tickers:
-            symbol = ticker["symbol"]
-            try:
+    async def _process_one_coin(self, ticker: dict) -> CoinScore | None:
+        """Score a single coin, applying safety filters. Returns CoinScore or None."""
+        symbol = ticker["symbol"]
+        try:
+            async with self._rate_limiter:
                 df_5m, df_15m, df_1h = await self.fetch_symbol_frames(symbol)
                 score = self._score_coin(ticker, df_15m, df_1h=df_1h, df_5m=df_5m)
 
-                passes, reason = self._passes_safety_filters(score)
-                if passes:
-                    raw_scores.append(score)
-                    logger.info(
-                        f"  ✅ {symbol}: score={score.grid_score:.3f} range={score.range_pct:.2f}% "
-                        f"atr={score.atr_pct:.2f}% mr={score.mean_reversion_score:.2f} align={score.mtf_alignment_score:+.2f}"
-                    )
-                else:
-                    filtered_out.append((symbol, reason))
-                    logger.info(f"  🚫 {symbol}: FILTERED — {reason}")
-            except Exception as e:
-                logger.warning(f"  {symbol}: skipped ({e})")
-                continue
-            finally:
-                if SCANNER_SYMBOL_DELAY_MS > 0:
-                    await asyncio.sleep(SCANNER_SYMBOL_DELAY_MS / 1000.0)
+            # Small inter-coin delay to smooth API request rate
+            if SCANNER_SYMBOL_DELAY_MS > 0:
+                await asyncio.sleep(SCANNER_SYMBOL_DELAY_MS / 1000.0)
+
+            passes, reason = self._passes_safety_filters(score)
+            if passes:
+                logger.info(
+                    f"  ✅ {symbol}: score={score.grid_score:.3f} range={score.range_pct:.2f}% "
+                    f"atr={score.atr_pct:.2f}% mr={score.mean_reversion_score:.2f} align={score.mtf_alignment_score:+.2f}"
+                )
+                return score
+            else:
+                logger.info(f"  🚫 {symbol}: FILTERED — {reason}")
+                return None
+        except Exception as e:
+            logger.warning(f"  {symbol}: skipped ({e})")
+            return None
+
+    async def scan(self) -> list[CoinScore]:
+        """
+        Run a full scan: fetch tickers, score each coin in parallel (rate-limited),
+        apply safety filters, return ranked results.
+        """
+        tickers = await self.fetch_tickers()
+
+        # Process all coins in parallel, rate-limited by semaphore (3 concurrent)
+        tasks = [self._process_one_coin(t) for t in tickers]
+        results = await asyncio.gather(*tasks)
+
+        raw_scores: list[CoinScore] = [r for r in results if r is not None]
+        filtered_count = sum(1 for r in results if r is None)
 
         raw_scores = self.learning.rank_candidates(raw_scores)
 
-        logger.info(f"\n📋 Scan summary: {len(raw_scores)} passed, {len(filtered_out)} filtered out")
-        if filtered_out:
-            logger.info("   Filtered:")
-            for sym, reason in filtered_out[:10]:
-                logger.info(f"     🚫 {sym}: {reason}")
-
+        logger.info(f"\n📋 Scan summary: {len(raw_scores)} passed, {filtered_count} filtered out")
         logger.info(f"\n🏆 Top {min(5, len(raw_scores))} coins:")
         for i, s in enumerate(raw_scores[:5]):
             logger.info(
