@@ -9,6 +9,7 @@ any grid is deployed.
 
 from dataclasses import dataclass, field
 import logging
+import os
 from typing import Iterable
 
 from coin_scanner import CoinScore
@@ -42,7 +43,7 @@ class DecisionSupervisor:
     DEFAULT_MIN_GRID_WIDTH_PCT = 0.25
     DEFAULT_MIN_GRIDS = 10
     DEFAULT_MAX_GRIDS = 20
-    DEFAULT_MIN_ENTRY_QUALITY = 0.35
+    DEFAULT_MIN_ENTRY_QUALITY = float(os.getenv("MIN_ENTRY_QUALITY", "0.35"))
     STRONG_ENTRY_QUALITY = 0.70
     VALID_SPACING_MODES = {"balanced", "buy_weighted", "sell_weighted"}
     BORDERLINE_CONFIDENCE_GRACE = 0.05
