@@ -1895,19 +1895,18 @@ class MultiGridManager:
 
 
 
-        # Deploy each pick as a concurrent grid
+# Deploy each pick as a concurrent grid — parallel with semaphore
 
         wallet_balance = self.wallet_tracker.get_balance()
 
-
+        # ── Phase 1: Validate + collect deploy params (sequential, cheap) ──
+        deploy_tasks = []
 
         for decision in picks:
 
             if len(self.slots) >= self.max_grids:
 
                 break
-
-
 
             # Find matching CoinScore
 
@@ -1925,8 +1924,6 @@ class MultiGridManager:
 
                 continue
 
-
-
             # Normalize LLM/scanner density against wallet budget before supervision,
             # risk sizing, and deployment.
             decision.num_grids = normalize_grid_density(decision.num_grids, wallet_balance=wallet_balance)
@@ -1943,13 +1940,9 @@ class MultiGridManager:
                 )
                 continue
 
-
-
             # v2: Get token profile
 
             token_profile = self.risk_monitor.get_token_profile(decision.symbol)
-
-
 
             # v2.1: Dedicated decision supervisor — fast correctness gate before
 
@@ -1986,14 +1979,11 @@ class MultiGridManager:
                     free_slots=max(0, self.max_grids - len(self.slots)),
                     grid_style=getattr(coin_score, "grid_style", None),
                 )
-
                 continue
 
             for warning in review.warnings:
 
                 logger.warning(f"🧠 {decision.symbol} supervisor warning: {warning}")
-
-
 
             # v2: Risk check — approve or adjust the deployment
 
@@ -2014,8 +2004,6 @@ class MultiGridManager:
 
             )
 
-
-
             if not risk_result["approved"]:
 
                 logger.warning(f"🛡️ {decision.symbol} REJECTED by risk monitor: {risk_result['reasons']}")
@@ -2027,18 +2015,13 @@ class MultiGridManager:
                     free_slots=max(0, self.max_grids - len(self.slots)),
                     grid_style=getattr(coin_score, "grid_style", None),
                 )
-
                 continue
-
-
 
             # Apply risk-adjusted params
 
             decision.leverage = risk_result["adjusted_leverage"]
 
             adjusted_order_size = risk_result["adjusted_order_size"]
-
-
 
             # v2: Volatility-scaled sizing
 
@@ -2061,8 +2044,6 @@ class MultiGridManager:
 
             )
 
-
-
             # Override grid params with agent + risk-adjusted decision
 
             coin_score.suggested_upper = decision.upper
@@ -2073,42 +2054,42 @@ class MultiGridManager:
 
             coin_score.suggested_leverage = decision.leverage
 
+            deploy_tasks.append({
+                "coin_score": coin_score,
+                "decision": decision,
+                "token_profile": token_profile,
+                "adjusted_leverage": risk_result["adjusted_leverage"],
+                "adjusted_order_size": adjusted_order_size,
+            })
 
+        # ── Phase 2: Parallel deploy (expensive, IO-bound) ──
+        self._deploy_semaphore = getattr(self, "_deploy_semaphore", None) or asyncio.Semaphore(3)
 
-            # Deploy with adjusted params
+        async def _run_one(p: dict) -> str | None:
+            async with self._deploy_semaphore:
+                try:
+                    await self._deploy_grid(
+                        p["coin_score"], p["decision"],
+                        token_profile=p["token_profile"],
+                        adjusted_leverage=p["adjusted_leverage"],
+                        adjusted_order_size=p["adjusted_order_size"],
+                    )
+                    return p["decision"].symbol
+                except Exception as exc:
+                    logger.warning(f"🛡️ {p['decision'].symbol} DEPLOY FAILED: {exc}")
+                    self._record_deploy_rejection(
+                        symbol=p["decision"].symbol,
+                        stage="deploy",
+                        reasons=[str(exc)],
+                        free_slots=max(0, self.max_grids - len(self.slots)),
+                        grid_style=getattr(p["coin_score"], "grid_style", None),
+                    )
+                    return None
 
-            try:
-                await self._deploy_grid(
-
-                    coin_score, decision,
-
-                    token_profile=token_profile,
-
-                    adjusted_leverage=risk_result["adjusted_leverage"],
-
-                    adjusted_order_size=adjusted_order_size,
-
-                )
-
-                active_symbols.append(decision.symbol)
-            except Exception as exc:
-                logger.warning(f"🛡️ {decision.symbol} DEPLOY FAILED: {exc}")
-                self._record_deploy_rejection(
-                    symbol=decision.symbol,
-                    stage="deploy",
-                    reasons=[str(exc)],
-                    free_slots=max(0, self.max_grids - len(self.slots)),
-                    grid_style=getattr(coin_score, "grid_style", None),
-                )
-                continue
-
-
-
-            # Rate limit between deployments
-
-            await asyncio.sleep(NEW_GRID_DEPLOY_DELAY)
-
-
+        results = await asyncio.gather(*(_run_one(t) for t in deploy_tasks))
+        for symbol in results:
+            if symbol:
+                active_symbols.append(symbol)
 
     def _select_coins_algorithmically(self, available: list[CoinScore], num_picks: int, wallet_balance: float) -> list[PreTradeDecision]:
         """

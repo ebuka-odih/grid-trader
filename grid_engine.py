@@ -324,21 +324,44 @@ class GridEngine:
         # Set leverage
         await self.set_leverage(symbol, leverage)
 
-        # Place all limit orders
+        # Place all limit orders — batch when exchange supports it
+        orders_data = []
         for level in grid.grid_levels:
-            try:
-                order = await self.exchange.create_limit_order(
-                    symbol=symbol,
-                    side=level.side.lower(),  # ccxt uses "buy"/"sell"
-                    amount=level.qty,
-                    price=level.price,
-                )
-                level.order_id = order["id"]
-                level.status = "placed"
-                logger.info(f"  ✅ {level.side} {level.qty} @ {level.price:.4f} → {order['id']}")
-            except Exception as e:
-                level.status = "failed"
-                logger.error(f"  ❌ {level.side} {level.qty} @ {level.price:.4f} → {e}")
+            orders_data.append({
+                "symbol": symbol,
+                "side": level.side.lower(),
+                "amount": level.qty,
+                "price": level.price,
+                "type": "limit",
+            })
+
+        try:
+            # Use batch endpoint when available (CCXT v4+ create_orders)
+            orders = await self.exchange.create_orders(orders_data)
+            for level, order in zip(grid.grid_levels, orders):
+                level.order_id = order.get("id", "")
+                level.status = "placed" if order.get("status") != "rejected" else "failed"
+                if level.status == "placed":
+                    logger.info(f"  ✅ {level.side} {level.qty} @ {level.price:.4f} → {order.get('id', '?')}")
+                else:
+                    logger.warning(f"  ❌ {level.side} {level.qty} @ {level.price:.4f} → rejected")
+        except (AttributeError, NotImplementedError):
+            # Fallback: sequential placement (older CCXT or unsupported exchange)
+            logger.info("Batch create_orders not supported, falling back to sequential placement")
+            for level in grid.grid_levels:
+                try:
+                    order = await self.exchange.create_limit_order(
+                        symbol=symbol,
+                        side=level.side.lower(),
+                        amount=level.qty,
+                        price=level.price,
+                    )
+                    level.order_id = order["id"]
+                    level.status = "placed"
+                    logger.info(f"  ✅ {level.side} {level.qty} @ {level.price:.4f} → {order['id']}")
+                except Exception as e:
+                    level.status = "failed"
+                    logger.error(f"  ❌ {level.side} {level.qty} @ {level.price:.4f} → {e}")
 
         grid.is_active = True
         self.active_grid = grid

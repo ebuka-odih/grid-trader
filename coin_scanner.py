@@ -9,6 +9,7 @@ Uses Bybit REST API (via ccxt) to fetch market data, then:
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -100,6 +101,9 @@ class CoinScanner:
         # Semaphore limits concurrent coin scoring to stay under Bybit rate limits.
         # 3 concurrent coins × 3 candle frames = 9 max concurrent API calls.
         self._rate_limiter = asyncio.Semaphore(3)
+        # Candle cache: {symbol: {timeframe: (price_at_fetch, dataframe, timestamp)}}
+        # Skips redundant API calls when price hasn't moved >2% since last fetch.
+        self._candle_cache: dict[str, dict[str, tuple[float, pd.DataFrame, float]]] = {}
 
     async def close(self):
         if getattr(self, "exchange", None) is not None:
@@ -156,14 +160,59 @@ class CoinScanner:
                 )
                 await asyncio.sleep(backoff)
 
-    async def fetch_symbol_frames(self, symbol: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Fetch short, medium, and higher timeframe candles for regime/entry scoring."""
-        df_5m, df_15m, df_1h = await asyncio.gather(
-            self.fetch_ohlcv(symbol, timeframe="5m", limit=72),
-            self.fetch_ohlcv(symbol, timeframe="15m", limit=96),
-            self.fetch_ohlcv(symbol, timeframe="1h", limit=72),
+    async def fetch_symbol_frames(self, symbol: str, current_price: float | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Fetch short, medium, and higher timeframe candles — with cache."""
+        # Cache invalidation: reuse cached frames if price hasn't moved >2%
+        CACHE_TTL = 300  # 5 min max cache age
+        PRICE_TOLERANCE_PCT = 2.0
+        now = time.time()
+
+        symbol_cache = self._candle_cache.get(symbol, {})
+        use_cache = current_price is not None
+
+        def _is_stale(tf: str) -> bool:
+            if tf not in symbol_cache:
+                return True
+            cached_price, _, cached_ts = symbol_cache[tf]
+            if now - cached_ts > CACHE_TTL:
+                return True
+            if use_cache and current_price:
+                price_change = abs(current_price - cached_price) / max(cached_price, 1e-9) * 100
+                if price_change > PRICE_TOLERANCE_PCT:
+                    return True
+            return False
+
+        needs_fetch = [tf for tf in ("5m", "15m", "1h") if _is_stale(tf)]
+
+        if not needs_fetch:
+            # All cached — fast path, no API calls
+            return (
+                symbol_cache["5m"][1],
+                symbol_cache["15m"][1],
+                symbol_cache["1h"][1],
+            )
+
+        # Fetch only stale timeframes, keep cached ones
+        fetch_tfs = list(set(needs_fetch))
+        frames = await asyncio.gather(
+            *(self.fetch_ohlcv(symbol, tf, limit=96 if tf == "15m" else 72) for tf in fetch_tfs)
         )
-        return df_5m, df_15m, df_1h
+
+        for tf, df in zip(fetch_tfs, frames):
+            if current_price is None:
+                current_price = float(df["close"].iloc[-1])
+            if symbol not in self._candle_cache:
+                self._candle_cache[symbol] = {}
+            self._candle_cache[symbol][tf] = (current_price, df, now)
+
+        # Return all 3 frames (fresh + cached)
+        if symbol not in self._candle_cache:
+            self._candle_cache[symbol] = {}
+        return (
+            self._candle_cache[symbol].get("5m", (0, pd.DataFrame(), 0))[1],
+            self._candle_cache[symbol].get("15m", (0, pd.DataFrame(), 0))[1],
+            self._candle_cache[symbol].get("1h", (0, pd.DataFrame(), 0))[1],
+        )
 
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """Calculate Average True Range."""
@@ -422,7 +471,8 @@ class CoinScanner:
         symbol = ticker["symbol"]
         try:
             async with self._rate_limiter:
-                df_5m, df_15m, df_1h = await self.fetch_symbol_frames(symbol)
+                price = float(ticker.get("last", 0))
+                df_5m, df_15m, df_1h = await self.fetch_symbol_frames(symbol, current_price=price)
                 score = self._score_coin(ticker, df_15m, df_1h=df_1h, df_5m=df_5m)
 
             # Small inter-coin delay to smooth API request rate
