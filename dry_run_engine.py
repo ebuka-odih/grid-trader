@@ -162,6 +162,10 @@ class DryRunEngine:
                  smart_close_config: SmartCloseConfig = None):
         self.state: Optional[DryRunState] = None
         self._tick_count = 0
+        # Touch-fill tracker: tracks the full price range seen so any
+        # level whose price has been reached fills immediately.
+        self._min_seen_price: Optional[float] = None
+        self._max_seen_price: Optional[float] = None
         self._drawdown_hold_alert_cooldown_seconds = float(
             os.getenv("DRAWDOWN_HOLD_ALERT_COOLDOWN_SECONDS", "60")
         )
@@ -201,6 +205,10 @@ class DryRunEngine:
             level.status = "placed"
 
         self.state = state
+        
+        # Reset touch-fill trackers for fresh grid deployment
+        self._min_seen_price = None
+        self._max_seen_price = None
         
         # v3: Initialize adaptive grid
         self._adaptive = AdaptiveGrid(
@@ -248,6 +256,14 @@ class DryRunEngine:
         self.state.current_price = price
         self._tick_count += 1
         
+        # Track full price range for touch-fill detection.
+        # Even if price jumps over a level (no clean cross), the level
+        # still fills because its price lies within the seen range.
+        if self._min_seen_price is None or price < self._min_seen_price:
+            self._min_seen_price = price
+        if self._max_seen_price is None or price > self._max_seen_price:
+            self._max_seen_price = price
+        
         # Update smart close price history
         self._smart_close.update_price(price)
         
@@ -275,7 +291,11 @@ class DryRunEngine:
                 self.state.position.update_unrealized(price)
                 return None
         
-        # ── Fill Detection (BEFORE recenter/trail) ──
+        # ── Fill Detection — cross + touch model ──
+        # Cross: price crosses through a level (old was one side, new is the other)
+        # Touch: price has ever reached this level (handles initial-tick fills
+        #        for both sides, and fills when a recently-deployed grid's
+        #        first price update is already past a level).
         event = None
         for level in self.state.grid.grid_levels:
             if level.index in self.state.filled_levels:
@@ -286,7 +306,11 @@ class DryRunEngine:
                 filled = True
             elif level.side == "Sell" and old_price < level.price <= price:
                 filled = True
-            elif level.side == "Buy" and price <= level.price and self._tick_count <= 2:
+            # Touch fill: if price has ever touched this level (any entry,
+            # not just clean crosses), fill it immediately.
+            elif level.side == "Buy" and self._min_seen_price is not None and self._min_seen_price <= level.price:
+                filled = True
+            elif level.side == "Sell" and self._max_seen_price is not None and self._max_seen_price >= level.price:
                 filled = True
             
             if filled:
