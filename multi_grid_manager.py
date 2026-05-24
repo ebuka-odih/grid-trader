@@ -366,8 +366,13 @@ def classify_grid_style(coin: CoinScore) -> str:
 
     if atr >= 3.5 or range_pct >= 12.0 or "volatile" in regime:
         style = "wide_volatile_grid"
-    elif trend in {"long", "up", "bull", "bullish"} or "up" in regime:
-        if entry_quality >= 0.25 and (entry_quality >= 0.45 or pullback >= 0.45 or range_pos <= 0.45 or vwap_dist < 0):
+    elif (trend in {"long", "up", "bull", "bullish"} or "up" in regime):
+        # Overextended in uptrend — route to short/neutral for mean reversion
+        if range_pos >= 0.70 and mr >= 0.55 and entry_quality >= 0.25:
+            style = "short_rebound_grid"
+        elif range_pos >= 0.65 and mr >= 0.50:
+            style = "neutral_scalp"
+        elif entry_quality >= 0.25 and (entry_quality >= 0.45 or pullback >= 0.45 or range_pos <= 0.45 or vwap_dist < 0):
             style = "long_pullback_grid"
         else:
             style = "micro_scalp"
