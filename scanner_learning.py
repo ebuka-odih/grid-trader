@@ -62,13 +62,13 @@ class ScannerLearning:
     IMBALANCE_THRESHOLD = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_THRESHOLD", "2"))
     IMBALANCE_WINDOW_SECONDS = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_WINDOW_SEC", "3600"))
     IMBALANCE_COOLDOWN_SECONDS = int(os.getenv("IMBALANCE_SOFT_BLACKLIST_COOLDOWN_SEC", "7200"))
-    MIN_QUALITY_TRADES = int(os.getenv("MIN_SCANNER_QUALITY_TRADES", "5"))
-    MIN_HISTORICAL_WIN_RATE = float(os.getenv("MIN_HISTORICAL_WIN_RATE", "0.80"))
-    # User target: risk:reward above 1/5 means average reward should be at
-    # least 0.2x average loss; higher-quality symbols score better.
-    MIN_HISTORICAL_REWARD_RISK = float(os.getenv("MIN_HISTORICAL_REWARD_RISK", "0.20"))
+    MIN_QUALITY_TRADES = int(os.getenv("MIN_SCANNER_QUALITY_TRADES", "3"))
+    MIN_HISTORICAL_WIN_RATE = float(os.getenv("MIN_HISTORICAL_WIN_RATE", "0.30"))
+    # User target: risk:reward above 1/20 means average reward should be at
+    # least 0.05x average loss; higher-quality symbols score better.
+    MIN_HISTORICAL_REWARD_RISK = float(os.getenv("MIN_HISTORICAL_REWARD_RISK", "0.05"))
     MIN_HISTORICAL_SHARPE_UNIT = float(os.getenv("MIN_HISTORICAL_SHARPE_UNIT", "0.0"))
-    MIN_HISTORICAL_EXPECTANCY = float(os.getenv("MIN_HISTORICAL_EXPECTANCY", "0.0"))
+    MIN_HISTORICAL_EXPECTANCY = float(os.getenv("MIN_HISTORICAL_EXPECTANCY", "-0.02"))
 
     def __init__(
         self,
