@@ -629,6 +629,9 @@ class DryRunEngine:
                     "price": lv.price,
                     "side": lv.side,
                     "status": lv.status,
+                    "qty": float(lv.qty),
+                    "entry_notional": round(float(lv.qty) * float(lv.price), 6),
+                    "margin_usdt": round(float(lv.qty) * float(lv.price) / s.grid.leverage, 6),
                 }
                 for lv in s.grid.grid_levels
             ],

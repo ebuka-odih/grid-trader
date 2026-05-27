@@ -582,6 +582,16 @@ class GridSlot:
 
     adjusted_order_size: float = 0.0
 
+    # v5: Progressive (martingale) sizing
+
+    progressive_sizing_enabled: bool = False
+
+    progressive_min_factor: float = 0.35
+
+    progressive_max_factor: float = 2.0
+
+    progressive_curve_power: float = 1.5
+
 
 
 
@@ -2435,6 +2445,14 @@ class MultiGridManager:
 
             adjusted_order_size=final_order_size,
 
+            progressive_sizing_enabled=adaptive_cfg.progressive_sizing_enabled,
+
+            progressive_min_factor=adaptive_cfg.progressive_min_factor,
+
+            progressive_max_factor=adaptive_cfg.progressive_max_factor,
+
+            progressive_curve_power=adaptive_cfg.progressive_curve_power,
+
         )
 
 
@@ -3750,6 +3768,13 @@ def _serialize_slots(slots: dict) -> dict:
             "position_side": status.get("position_side"),
             "entry_price": status.get("entry_price"),
             "imbalance_ratio": status.get("imbalance_ratio", 0),
+            # Progressive (martingale) sizing info
+            "progressive_sizing": {
+                "enabled": getattr(slot, "progressive_sizing_enabled", False),
+                "min_factor": getattr(slot, "progressive_min_factor", 0.35),
+                "max_factor": getattr(slot, "progressive_max_factor", 2.0),
+                "curve_power": getattr(slot, "progressive_curve_power", 1.5),
+            },
             **entry_shape,
             **fill_danger,
         }

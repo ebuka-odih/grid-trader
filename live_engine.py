@@ -718,6 +718,9 @@ class LiveEngine:
                     "price": getattr(lv, "price", 0.0),
                     "side": getattr(lv, "side", "Buy"),
                     "status": getattr(lv, "status", "pending"),
+                    "qty": float(getattr(lv, "qty", 0.0)),
+                    "entry_notional": round(float(getattr(lv, "qty", 0.0)) * float(getattr(lv, "price", 0.0)), 6),
+                    "margin_usdt": round(float(getattr(lv, "qty", 0.0)) * float(getattr(lv, "price", 0.0)) / s.grid.leverage, 6),
                 }
                 for i, lv in enumerate(s.grid.grid_levels)
             ],
