@@ -43,6 +43,12 @@ class AdaptiveConfig:
     exp_sizing_enabled: bool = True
     exp_sizing_gamma: float = 1.5         # Higher = more aggressive edge reduction (1.0=uniform, 2.0=very aggressive)
     exp_sizing_min_factor: float = 0.3    # Minimum order size factor (30% of base)
+
+    # Progressive (martingale) sizing — grows away from center
+    progressive_sizing_enabled: bool = False
+    progressive_min_factor: float = 0.35  # Closest level gets 35% of base order
+    progressive_max_factor: float = 2.0   # Farthest level gets 200% of base order
+    progressive_curve_power: float = 1.5  # 1.0=linear, <1=early ramp, >1=late ramp
     
     # Spike detection (fast)
     spike_window_sec: float = 10.0        # Fast spike window (was 60s)

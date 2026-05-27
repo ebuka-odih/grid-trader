@@ -192,6 +192,11 @@ class DryRunEngine:
             current_price=coin_score.price,
             leverage=coin_score.suggested_leverage,
             order_size_usdt=BASE_ORDER_SIZE_USDT,
+            exp_sizing_gamma=self._adaptive_config.exp_sizing_gamma,
+            progressive_sizing_enabled=self._adaptive_config.progressive_sizing_enabled,
+            progressive_min_factor=self._adaptive_config.progressive_min_factor,
+            progressive_max_factor=self._adaptive_config.progressive_max_factor,
+            progressive_curve_power=self._adaptive_config.progressive_curve_power,
         )
 
         state = DryRunState(

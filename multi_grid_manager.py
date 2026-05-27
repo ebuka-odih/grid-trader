@@ -2330,6 +2330,18 @@ class MultiGridManager:
             adaptive_cfg.recenter_trigger_pct = token_profile["recenter_trigger_pct"]
         if token_profile.get("exp_sizing_gamma"):
             adaptive_cfg.exp_sizing_gamma = token_profile["exp_sizing_gamma"]
+        # v5: Progressive (martingale) sizing overrides
+        if "progressive_sizing_enabled" in token_profile:
+            adaptive_cfg.progressive_sizing_enabled = bool(token_profile["progressive_sizing_enabled"])
+            # Progressive and exp sizing are exclusive — disable exp when enabling progressive
+            if adaptive_cfg.progressive_sizing_enabled:
+                adaptive_cfg.exp_sizing_gamma = 0.0
+        if token_profile.get("progressive_min_factor"):
+            adaptive_cfg.progressive_min_factor = float(token_profile["progressive_min_factor"])
+        if token_profile.get("progressive_max_factor"):
+            adaptive_cfg.progressive_max_factor = float(token_profile["progressive_max_factor"])
+        if token_profile.get("progressive_curve_power"):
+            adaptive_cfg.progressive_curve_power = float(token_profile["progressive_curve_power"])
         
         # v4: Use LiveEngine when DRY_RUN=false, DryRunEngine when true.
         # The live engine receives the manager's TelegramAlerter so it can
@@ -2349,6 +2361,11 @@ class MultiGridManager:
             decision.direction,
 
             order_size_usdt=final_order_size,
+
+            progressive_sizing_enabled=adaptive_cfg.progressive_sizing_enabled,
+            progressive_min_factor=adaptive_cfg.progressive_min_factor,
+            progressive_max_factor=adaptive_cfg.progressive_max_factor,
+            progressive_curve_power=adaptive_cfg.progressive_curve_power,
 
         )
         
@@ -2509,6 +2526,11 @@ class MultiGridManager:
 
         order_size_usdt: float = BASE_ORDER_SIZE_USDT,
 
+        progressive_sizing_enabled: bool = False,
+        progressive_min_factor: float = 0.35,
+        progressive_max_factor: float = 2.0,
+        progressive_curve_power: float = 1.5,
+
     ):
         """Deploy a symmetric two-sided grid to an isolated engine."""
 
@@ -2527,6 +2549,11 @@ class MultiGridManager:
             leverage=coin_score.suggested_leverage,
 
             order_size_usdt=order_size_usdt,
+
+            progressive_sizing_enabled=progressive_sizing_enabled,
+            progressive_min_factor=progressive_min_factor,
+            progressive_max_factor=progressive_max_factor,
+            progressive_curve_power=progressive_curve_power,
 
         )
 

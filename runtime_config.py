@@ -126,6 +126,22 @@ CONFIG_SCHEMA: dict[str, FieldSpec] = {
         type="int", default=100, min=1, max=125,
         category="sizing", label="Max safe leverage",
         help="Upper clamp for allowed leverage values."),
+    "PROGRESSIVE_SIZING_ENABLED": FieldSpec(
+        type="bool", default=False,
+        category="sizing", label="Progressive (martingale) sizing",
+        help="Grow order size from center outward. Closer levels get smaller orders, farther levels get bigger ones. Disables exponential sizing."),
+    "PROGRESSIVE_MIN_FACTOR": FieldSpec(
+        type="float", default=0.35, min=0.1, max=1.0,
+        category="sizing", label="Progressive: min factor",
+        help="Closest grid level gets this fraction of the base order. Lower = more conservative near center."),
+    "PROGRESSIVE_MAX_FACTOR": FieldSpec(
+        type="float", default=2.0, min=1.0, max=5.0,
+        category="sizing", label="Progressive: max factor",
+        help="Farthest grid level gets this multiple of the base order. Higher = more aggressive on deep bounces."),
+    "PROGRESSIVE_CURVE_POWER": FieldSpec(
+        type="float", default=1.5, min=0.5, max=3.0,
+        category="sizing", label="Progressive: curve power",
+        help="Shape of the sizing curve. 1.0=linear, <1=early ramp (levels get big fast), >1=late ramp (levels stay small then jump at the edge)."),
     "MIN_DEPLOY_LEVERAGE": FieldSpec(
         type="int", default=10, min=1, max=125,
         category="sizing", label="Min deploy leverage (legacy alias)",

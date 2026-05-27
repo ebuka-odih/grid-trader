@@ -168,7 +168,20 @@ class LiveEngine:
         from config import BYBIT_API_KEY, BYBIT_API_SECRET, TRADING_MODE
         
         self._grid_engine = GridEngine()
-        grid = await self._grid_engine.deploy_grid(coin_score)
+        grid = self._grid_engine.calculate_grid_levels(
+            symbol=coin_score.symbol,
+            upper=coin_score.suggested_upper,
+            lower=coin_score.suggested_lower,
+            num_grids=coin_score.suggested_grids,
+            current_price=coin_score.price,
+            leverage=coin_score.suggested_leverage,
+            order_size_usdt=BASE_ORDER_SIZE_USDT,
+            exp_sizing_gamma=self._adaptive_config.exp_sizing_gamma,
+            progressive_sizing_enabled=self._adaptive_config.progressive_sizing_enabled,
+            progressive_min_factor=self._adaptive_config.progressive_min_factor,
+            progressive_max_factor=self._adaptive_config.progressive_max_factor,
+            progressive_curve_power=self._adaptive_config.progressive_curve_power,
+        )
         
         self.state = LiveState(
             grid=grid,
