@@ -1745,6 +1745,44 @@ class MultiGridManager:
 
         now = time.time()
 
+        # ── Wallet-level auto-loss close ─────────────────────────────────
+        # Track peak balance and close everything if drawdown exceeds threshold
+        peak = getattr(self, "_wallet_peak_balance", 0.0)
+        wallet_balance = self.wallet_tracker.get_balance()
+        if wallet_balance > peak:
+            self._wallet_peak_balance = wallet_balance
+            peak = wallet_balance
+        
+        # Read drawdown limit from config (runtime-config-overridable)
+        from config import MAX_DRAWDOWN_PCT as _DD
+        drawdown_pct = max(1.0, min(50.0, float(
+            getattr(self, "_wallet_drawdown_pct", _DD)
+        )))
+        drawdown_limit = peak * (1.0 - drawdown_pct / 100.0)
+        
+        if len(self.slots) > 0 and wallet_balance < drawdown_limit:
+            logger.critical(
+                f"🔴 WALLET AUTO-CLOSE: balance ${wallet_balance:.2f} "
+                f"dropped {((peak - wallet_balance) / peak * 100):.1f}% "
+                f"from peak ${peak:.2f} (limit: ${drawdown_limit:.2f})"
+            )
+            # Close all slots immediately
+            close_tasks = []
+            for slot in list(self.slots.values()):
+                close_tasks.append(
+                    self._close_slot(slot, "drawdown", f"wallet auto-close at {drawdown_pct}% drawdown")
+                )
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+            
+            # Pause deployment for 30 minutes
+            pause_seconds = 1800
+            self._deployment_paused_until = now + pause_seconds
+            logger.warning(f"💓 Deployment paused by wallet auto-close for {pause_seconds}s")
+            
+            # Reset peak so recovery can start fresh
+            self._wallet_peak_balance = wallet_balance
+            return
+
         if now < getattr(self, "_deployment_paused_until", 0):
 
             remaining = self._deployment_paused_until - now

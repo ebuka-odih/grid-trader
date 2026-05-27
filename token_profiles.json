@@ -6,7 +6,7 @@
     "BTC/USDT:USDT": {
       "_comment": "Bitcoin \u2014 deep liquidity, tight spreads, ideal grid candidate",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -24,7 +24,7 @@
     "ETH/USDT:USDT": {
       "_comment": "Ethereum \u2014 deep liquidity, good mean-reversion",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 8,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -42,7 +42,7 @@
     "SOL/USDT:USDT": {
       "_comment": "Solana \u2014 good volatility, liquid, great grid coin",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 5.0,
       "target_pnl": [
@@ -60,7 +60,7 @@
     "PEPE/USDT:USDT": {
       "_comment": "Meme coin \u2014 high leverage, small orders, aggressive targets, fast timeout",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 12,
       "order_size_usdt": 3.0,
       "target_pnl": [
@@ -78,7 +78,7 @@
     "DOGE/USDT:USDT": {
       "_comment": "OG meme \u2014 neutral, small exposure",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 12,
       "order_size_usdt": 3.0,
       "target_pnl": [
@@ -96,7 +96,7 @@
     "1000PEPE/USDT:USDT": {
       "_comment": "Same as PEPE \u2014 different listing format",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 12,
       "order_size_usdt": 3.0,
       "target_pnl": [
@@ -114,7 +114,7 @@
     "XRP/USDT:USDT": {
       "_comment": "XRP \u2014 liquid, good mean-reversion",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 5.0,
       "target_pnl": [
@@ -132,7 +132,7 @@
     "ADA/USDT:USDT": {
       "_comment": "Cardano \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -150,7 +150,7 @@
     "AVAX/USDT:USDT": {
       "_comment": "Avalanche \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 9,
       "order_size_usdt": 5.0,
       "target_pnl": [
@@ -168,7 +168,7 @@
     "LINK/USDT:USDT": {
       "_comment": "Chainlink \u2014 DeFi oracle, liquid",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 8,
       "order_size_usdt": 5.0,
       "target_pnl": [
@@ -186,7 +186,7 @@
     "AAVE/USDT:USDT": {
       "_comment": "DeFi blue chip",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -204,7 +204,7 @@
     "TAO/USDT:USDT": {
       "_comment": "AI narrative \u2014 higher risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -222,7 +222,7 @@
     "HYPE/USDT:USDT": {
       "_comment": "Volatile new listing",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -240,7 +240,7 @@
     "ZEC/USDT:USDT": {
       "_comment": "Privacy coin",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -258,7 +258,7 @@
     "SUI/USDT:USDT": {
       "_comment": "New L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 9,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -276,7 +276,7 @@
     "NEAR/USDT:USDT": {
       "_comment": "Sharded L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 9,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -294,7 +294,7 @@
     "APT/USDT:USDT": {
       "_comment": "Aptos L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 10,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -312,7 +312,7 @@
     "ARB/USDT:USDT": {
       "_comment": "Arbitrum L2 \u2014 medium, long bias",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 9,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -330,7 +330,7 @@
     "OP/USDT:USDT": {
       "_comment": "Optimism L2 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 9,
       "order_size_usdt": 4.0,
       "target_pnl": [
@@ -348,7 +348,7 @@
     "FIL/USDT:USDT": {
       "_comment": "Decentralized storage \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 50,
+      "leverage": 35,
       "num_grids": 8,
       "order_size_usdt": 4.0,
       "target_pnl": [
