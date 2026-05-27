@@ -1753,11 +1753,18 @@ class MultiGridManager:
             self._wallet_peak_balance = wallet_balance
             peak = wallet_balance
         
-        # Read drawdown limit from config (runtime-config-overridable)
-        from config import MAX_DRAWDOWN_PCT as _DD
-        drawdown_pct = max(1.0, min(50.0, float(
-            getattr(self, "_wallet_drawdown_pct", _DD)
-        )))
+        # Read drawdown limit from runtime_config.json (overrides env)
+        drawdown_pct = 12.0  # default
+        try:
+            # Read from runtime_config
+            with open("/data/runtime_config.json") as _rcf:
+                _rc = json.load(_rcf)
+            drawdown_pct = max(1.0, min(50.0, float(
+                _rc.get("values", {}).get("MAX_DRAWDOWN_PCT", drawdown_pct)
+            )))
+        except Exception:
+            pass
+        
         drawdown_limit = peak * (1.0 - drawdown_pct / 100.0)
         
         if len(self.slots) > 0 and wallet_balance < drawdown_limit:
