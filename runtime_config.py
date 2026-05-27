@@ -90,6 +90,10 @@ CONFIG_SCHEMA: dict[str, FieldSpec] = {
         type="int", default=500, min=1, max=999,
         category="sizing", label="Max concurrent grids",
         help="Cap on simultaneously active grid slots."),
+    "MAX_GRIDS_PER_SYMBOL": FieldSpec(
+        type="int", default=5, min=1, max=20,
+        category="sizing", label="Max grids per symbol",
+        help="Cap on concurrently active grids for a single symbol."),
     "DEFAULT_LEVERAGE": FieldSpec(
         type="int", default=100, min=1, max=125,
         category="sizing", label="Default leverage",

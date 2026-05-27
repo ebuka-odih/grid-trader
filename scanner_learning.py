@@ -75,7 +75,7 @@ class ScannerLearning:
         now_fn: Callable[[], float] | None = None,
         cooldown_seconds: int = 90 * 60,
         failure_threshold: int = 3,
-        state_path: str | None = "scanner_learning_state.json",
+        state_path: str | None = "/data/scanner_learning_state.json",
     ):
         self._now_fn = now_fn or time.time
         self.cooldown_seconds = cooldown_seconds
