@@ -94,6 +94,26 @@ CONFIG_SCHEMA: dict[str, FieldSpec] = {
         type="int", default=5, min=1, max=20,
         category="sizing", label="Max grids per symbol",
         help="Cap on concurrently active grids for a single symbol."),
+    "HARD_FLOOR_BASE_PCT": FieldSpec(
+        type="float", default=40.0, min=10.0, max=80.0,
+        category="stop_loss", label="Hard loss floor (% margin)",
+        help="Per-grid stop-loss floor as %% of allocated margin. Partial close triggers at this threshold."),
+    "HARD_FLOOR_MIN_PCT": FieldSpec(
+        type="float", default=30.0, min=10.0, max=60.0,
+        category="stop_loss", label="Hard floor min (ATR clamp)",
+        help="ATR-bucketed lower clamp for the hard loss floor."),
+    "HARD_FLOOR_MAX_PCT": FieldSpec(
+        type="float", default=55.0, min=20.0, max=90.0,
+        category="stop_loss", label="Hard floor max (ATR clamp)",
+        help="ATR-bucketed upper clamp for the hard loss floor."),
+    "SCALE_OUT_FRACTION": FieldSpec(
+        type="float", default=0.5, min=0.1, max=1.0,
+        category="stop_loss", label="Scale-out fraction",
+        help="Fraction of position to close on first floor breach. 0.5 = close half."),
+    "DYNAMIC_TP_FLOOR_PCT": FieldSpec(
+        type="float", default=3.0, min=0.5, max=20.0,
+        category="take_profit", label="TP floor (% margin)",
+        help="Take-profit target as %% of allocated margin for young positions."),
     "DEFAULT_LEVERAGE": FieldSpec(
         type="int", default=100, min=1, max=125,
         category="sizing", label="Default leverage",

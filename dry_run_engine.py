@@ -79,9 +79,9 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         # - 15-18% is the sweet spot: real distress without noise stops.
         # Combined with the post-scale-out fix (only unrealized counts after
         # the half-close), the recovery window has real room to work.
-        hard_loss_pct_floor=_f("HARD_FLOOR_BASE_PCT", 15.0),
-        hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 12.0),
-        hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 22.0),
+        hard_loss_pct_floor=_f("HARD_FLOOR_BASE_PCT", 40.0),
+        hard_loss_pct_floor_min=_f("HARD_FLOOR_MIN_PCT", 30.0),
+        hard_loss_pct_floor_max=_f("HARD_FLOOR_MAX_PCT", 55.0),
         scale_out_fraction=_f("SCALE_OUT_FRACTION", 0.5),
         # Patch J: post-scale-out cooldown (env-tunable).
         post_scale_out_cooldown_sec=_f("POST_SCALE_OUT_COOLDOWN_SEC", 60.0),
