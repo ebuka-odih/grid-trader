@@ -71,6 +71,13 @@ class PortfolioRiskMonitor:
             float(profile.get("max_wallet_exposure_pct", MAX_TRADE_WALLET_EXPOSURE_PCT)),
             MAX_TRADE_WALLET_EXPOSURE_PCT,
         )
+        # v5: Inherit progressive (martingale) sizing from defaults if not
+        # specified in the token's explicit profile
+        progressive_defaults = self.defaults if self.defaults else {}
+        for pf in ("progressive_sizing_enabled", "progressive_min_factor",
+                    "progressive_max_factor", "progressive_curve_power"):
+            if pf not in profile and pf in progressive_defaults:
+                profile[pf] = progressive_defaults[pf]
         return profile
 
     def get_direction_bias(self, symbol: str) -> str:

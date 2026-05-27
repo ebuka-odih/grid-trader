@@ -415,7 +415,20 @@
     "reserve_pct": 20,
     "emergency_liquidation_buffer_pct": 10,
     "max_trade_wallet_exposure_pct": 80.0,
-    "max_leverage": 100
+    "max_leverage": 100,
+    "default_token_profile": {
+      "_comment": "Fallback profile for tokens without explicit profiles",
+      "leverage": 35,
+      "max_leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 0.5,
+      "target_pnl_pct": [2.0, 4.0],
+      "max_wallet_exposure_pct": 2.0,
+      "progressive_sizing_enabled": true,
+      "progressive_min_factor": 0.35,
+      "progressive_max_factor": 2.0,
+      "progressive_curve_power": 1.5
+    }
   },
   "defaults": {
     "_comment": "Fallback for tokens not explicitly profiled",
@@ -441,6 +454,7 @@
   "blacklist": [
     "ACE",
     "BLUR",
+    "BTC",
     "GALA",
     "NIL",
     "PEOPLE",
