@@ -137,8 +137,6 @@ logging.basicConfig(
 
     handlers=[
 
-        logging.StreamHandler(),
-
         logging.FileHandler("multi_grid_run.log"),
 
     ],
@@ -1427,48 +1425,86 @@ class MultiGridManager:
         """Start WebSocket for execution (fill) updates."""
         import websockets
         import json
-        from config import BYBIT_WS_PRIVATE
-        
-        ws_url = BYBIT_WS_PRIVATE
+        from config import EXCHANGE, TRADING_MODE
+
+        # Get WebSocket URL based on exchange
+        if EXCHANGE == "binance":
+            if TRADING_MODE == "testnet":
+                ws_url = "wss://stream.binancefuture.com/ws"
+            else:
+                ws_url = "wss://fstream.binance.com/ws"
+        else:  # bybit
+            if TRADING_MODE == "testnet":
+                ws_url = "wss://stream-testnet.bybit.com/v5/private"
+            else:
+                ws_url = "wss://stream.bybit.com/v5/private"
         
         async def _execution_loop():
-            """Connect to Bybit private WS and listen for executions."""
+            """Connect to exchange private WS and listen for executions."""
+            from config import EXCHANGE
             while self._running:
                 try:
                     async with websockets.connect(ws_url) as ws:
-                        # Authenticate
-                        from config import BYBIT_API_KEY, BYBIT_API_SECRET
-                        import hmac
-                        import hashlib
-                        import time as _time
-                        
-                        expires = int(_time.time() * 1000) + 10000
-                        signature = hmac.new(
-                            BYBIT_API_SECRET.encode(),
-                            f"GET/realtime{expires}".encode(),
-                            hashlib.sha256
-                        ).hexdigest()
-                        
-                        auth_msg = {
-                            "op": "auth",
-                            "args": [BYBIT_API_KEY, expires, signature]
-                        }
-                        await ws.send(json.dumps(auth_msg))
-                        
-                        # Subscribe to execution
-                        sub_msg = {"op": "subscribe", "args": ["execution"]}
-                        await ws.send(json.dumps(sub_msg))
-                        
-                        logger.info("🔴 Execution WebSocket connected")
-                        
-                        async for message in ws:
+                        if EXCHANGE == "binance":
+                            # Binance: get listen key for user data stream
+                            from exchange_factory import create_exchange
+                            exchange = create_exchange()
                             try:
-                                data = json.loads(message)
-                                if data.get("topic") == "execution":
-                                    for exec_data in data.get("data", []):
-                                        await self._handle_execution(exec_data)
+                                listen_key_resp = await exchange.fapiPrivatePostListenKey()
+                                listen_key = listen_key_resp.get("listenKey", "")
                             except Exception as e:
-                                logger.error(f"Execution WS message error: {e}")
+                                logger.warning(f"Failed to get Binance listen key: {e}")
+                                await asyncio.sleep(5)
+                                continue
+                            
+                            # Subscribe to user data stream
+                            await ws.send(json.dumps({
+                                "method": "SUBSCRIBE",
+                                "params": [listen_key],
+                                "id": 1
+                            }))
+                            logger.info("🔴 Binance Execution WebSocket connected")
+                            
+                            async for message in ws:
+                                try:
+                                    data = json.loads(message)
+                                    if data.get("e") == "ORDER_TRADE_UPDATE":
+                                        await self._handle_execution(data)
+                                except Exception as e:
+                                    logger.error(f"Binance execution WS error: {e}")
+                        else:
+                            # Bybit: auth + subscribe
+                            from config import BYBIT_API_KEY, BYBIT_API_SECRET
+                            import hmac
+                            import hashlib
+                            import time as _time
+                            
+                            expires = int(_time.time() * 1000) + 10000
+                            signature = hmac.new(
+                                BYBIT_API_SECRET.encode(),
+                                f"GET/realtime{expires}".encode(),
+                                hashlib.sha256
+                            ).hexdigest()
+                            
+                            auth_msg = {
+                                "op": "auth",
+                                "args": [BYBIT_API_KEY, expires, signature]
+                            }
+                            await ws.send(json.dumps(auth_msg))
+                            
+                            sub_msg = {"op": "subscribe", "args": ["execution"]}
+                            await ws.send(json.dumps(sub_msg))
+                            
+                            logger.info("🔴 Bybit Execution WebSocket connected")
+                            
+                            async for message in ws:
+                                try:
+                                    data = json.loads(message)
+                                    if data.get("topic") == "execution":
+                                        for exec_data in data.get("data", []):
+                                            await self._handle_execution(exec_data)
+                                except Exception as e:
+                                    logger.error(f"Execution WS message error: {e}")
                 
                 except Exception as e:
                     logger.error(f"Execution WS connection error: {e}")
