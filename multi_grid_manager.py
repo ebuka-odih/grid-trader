@@ -939,6 +939,13 @@ class MultiGridManager:
         self.grid_calc = GridEngine()
 
         self.journal = ImprovementLoop(db_path=f"sqlite:///{os.getenv('GRID_TRADER_DB_FILE', 'multi_grid_trades.db')}")
+        # Clear stale "open" cycles left by a previous crash/ungraceful exit so
+        # the dashboard never shows phantom stuck grids. At construction there
+        # are no active slots yet, so every still-open cycle is an orphan.
+        try:
+            self.journal.close_orphaned_cycles()
+        except Exception as _e:
+            logger.warning(f"orphaned-cycle cleanup at startup failed: {_e}")
 
         self.alerter = TelegramAlerter()
         # HeartbeatRegulator looks for a manager._push_api_state callable.

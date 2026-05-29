@@ -226,6 +226,45 @@ class ImprovementLoop:
         finally:
             session.close()
 
+    def close_orphaned_cycles(self, active_grid_ids=None, reason: str = "orphaned_at_restart") -> int:
+        """Close grid_cycles left open (closed_at IS NULL) that don't belong to a
+        currently-active grid.
+
+        Run at startup to clear stale "stuck" cycles from a previous crash or
+        ungraceful exit, so the dashboard never shows phantom open grids. Pass
+        the set of live grid_ids to protect (defaults to none — at boot there are
+        no active grids, so every open cycle is an orphan). Returns the count
+        closed. Idempotent and non-destructive (only stamps closed_at/0 PnL)."""
+        active = set(active_grid_ids or [])
+        session = self.Session()
+        try:
+            orphans = (
+                session.query(GridCycleRecord)
+                .filter(GridCycleRecord.closed_at.is_(None))
+                .all()
+            )
+            n = 0
+            for c in orphans:
+                if c.grid_id in active:
+                    continue
+                c.closed_at = datetime.utcnow()
+                c.close_reason = reason
+                if c.total_pnl is None:
+                    c.total_pnl = 0.0
+                if c.realized_pnl is None:
+                    c.realized_pnl = 0.0
+                n += 1
+            session.commit()
+            if n:
+                logger.info(f"🧹 Closed {n} orphaned open cycle(s) at startup")
+            return n
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to close orphaned cycles: {e}")
+            return 0
+        finally:
+            session.close()
+
     def record_cycle_start(self, grid_id: str, symbol: str, upper: float,
                            lower: float, num_grids: int, leverage: int,
                            direction: str = "neutral", adjusted_leverage: int = 0,
