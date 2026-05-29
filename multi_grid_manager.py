@@ -258,6 +258,13 @@ EXPOSURE_REAP_MIN_AGE_SEC = float(os.getenv("EXPOSURE_REAP_MIN_AGE_SEC", "120"))
 # actually captures the chosen direction; the dual pair self-hedges and burned
 # two slots per coin. Set true to restore the old straddle behaviour.
 DUAL_DIRECTION_ENABLED = str(os.getenv("DUAL_DIRECTION_ENABLED", "false")).lower() in ("1", "true", "yes", "on")
+# Scalp mode: place ONE tight NEUTRAL grid straddling current price (buy ladder
+# just below, sell ladder just above) so small oscillations fill constantly,
+# instead of an offset directional pullback/rebound zone that waits for a bigger
+# move and mostly expires unfilled. SCALP_HALF_WIDTH_PCT is the half-band, so the
+# grid spans price·(1±hw); spacing = 2·hw / (num_grids-1).
+SCALP_MODE_ENABLED = str(os.getenv("SCALP_MODE_ENABLED", "true")).lower() in ("1", "true", "yes", "on")
+SCALP_HALF_WIDTH_PCT = float(os.getenv("SCALP_HALF_WIDTH_PCT", "0.9"))
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -2500,6 +2507,20 @@ class MultiGridManager:
                     token_profile=profile,
                     wallet_balance=wallet_balance,
                 )
+                # Scalp mode: override to a tight NEUTRAL band straddling current
+                # price so the grid fills on small oscillations (buy just below /
+                # sell just above) instead of an offset directional zone that
+                # waits for a pullback and mostly times out unfilled.
+                if SCALP_MODE_ENABLED and price > 0:
+                    hw = SCALP_HALF_WIDTH_PCT / 100.0
+                    _dp = max(2, 8 - int(price))
+                    decision.upper = round(price * (1.0 + hw), _dp)
+                    decision.lower = round(price * (1.0 - hw), _dp)
+                    decision.direction = "neutral"
+                    decision.reasoning = (
+                        f"scalp: neutral band ±{SCALP_HALF_WIDTH_PCT:.2f}% around ${price:.4f} "
+                        f"({decision.num_grids} levels)"
+                    )
                 direction_label = getattr(decision, "direction", "neutral") or "neutral"
                 decision.reasoning = (
                     f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
