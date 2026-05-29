@@ -241,6 +241,12 @@ MIN_PROGRESS_PRICE_MOVE_PCT = float(os.getenv("MIN_PROGRESS_PRICE_MOVE_PCT", "0.
 MIN_PROGRESS_PNL_MOVE_USDT = float(os.getenv("MIN_PROGRESS_PNL_MOVE_USDT", "0.01"))
 LIVE_WALLET_SYNC_INTERVAL_SECONDS = float(os.getenv("LIVE_WALLET_SYNC_INTERVAL_SECONDS", "20"))
 LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY = float(os.getenv("LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY", "1.0"))
+# Dynamic real-margin exposure gate (authoritative, driven off live Bybit
+# totalInitialMargin/totalEquity — unlike the in-memory risk_monitor estimate).
+# Deploy cap: stop opening NEW grids once real exposure reaches this.
+# Hard cap: force-close the largest grid to shed margin if real exposure breaches this.
+EXPOSURE_DEPLOY_CAP_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", str(MAX_TOTAL_WALLET_EXPOSURE_PCT)))
+EXPOSURE_HARD_CAP_PCT = float(os.getenv("EXPOSURE_HARD_CAP_PCT", str(EXPOSURE_DEPLOY_CAP_PCT + 5.0)))
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -1301,6 +1307,27 @@ class MultiGridManager:
             logger.warning(f"live equity fetch failed: {e}")
             return None
 
+    async def _real_exposure_pct(self) -> "float | None":
+        """Authoritative wallet exposure %% = real totalInitialMargin / totalEquity * 100.
+
+        Fetched fresh from Bybit each call so the deploy gate / hard-cap scale-out
+        act on TRUE margin usage (which includes order margin on resting limit
+        orders), not the in-memory risk_monitor estimate that proved blind to it.
+        Returns None in dry-run or on fetch failure; callers fail-closed (block
+        new deploys) when None.
+        """
+        if DRY_RUN:
+            return None
+        try:
+            balance = await self.grid_calc.exchange.fetch_balance({"type": "swap"})
+            equity, _avail, margin_used = self._extract_live_wallet_from_balance(balance)
+            if equity and equity > 0 and margin_used is not None:
+                return float(margin_used) / float(equity) * 100.0
+            return None
+        except Exception as e:
+            logger.warning(f"real exposure fetch failed: {e}")
+            return None
+
 
 
     # ── Lifecycle ─────────────────────────────────────────────
@@ -1752,8 +1779,74 @@ class MultiGridManager:
             except Exception:
                 pass
 
+        # ── Hard real-margin ceiling: shed exposure if breached ──────────
+        # Driven off the live Bybit figure (not the in-memory estimate). If real
+        # margin exceeds the hard cap — e.g. because existing grids kept filling
+        # after the deploy gate stopped new ones — force-close the largest grid
+        # to free margin. Re-evaluated every risk tick until back under.
+        if not DRY_RUN and self.slots:
+            real_exp = await self._real_exposure_pct()
+            if real_exp is not None and real_exp >= EXPOSURE_HARD_CAP_PCT:
+                victim = self._pick_scale_out_victim()
+                if victim is not None:
+                    logger.warning(
+                        f"🛑 EXPOSURE HARD CAP: real margin {real_exp:.1f}% >= "
+                        f"{EXPOSURE_HARD_CAP_PCT:.0f}% — force-closing slot #{victim.slot_id} "
+                        f"{victim.symbol} to shed margin"
+                    )
+                    try:
+                        await self.alerter.send_message(
+                            f"🛑 EXPOSURE {real_exp:.1f}% ≥ {EXPOSURE_HARD_CAP_PCT:.0f}% — "
+                            f"closing {victim.symbol} (#{victim.slot_id})"
+                        )
+                    except Exception:
+                        pass
+                    await self._force_close_slot(victim, "exposure_hard_cap")
+
         # Also update wallet tracker with current state
         self._update_wallet_tracker()
+
+    def _pick_scale_out_victim(self):
+        """Choose a grid to close to shed the most real margin: the largest open
+        position notional first; if every grid is flat, the most recently
+        deployed slot (undo the newest addition). Skips slots already closing."""
+        best = None
+        best_notional = -1.0
+        newest = None
+        newest_id = -1
+        for slot in self.slots.values():
+            if getattr(slot, "close_reason", None):
+                continue
+            try:
+                st = slot.engine.get_status()
+            except Exception:
+                st = {}
+            notional = abs(float(st.get("position_qty", 0) or 0)) * float(st.get("entry_price", 0) or 0)
+            if notional > best_notional:
+                best_notional = notional
+                best = slot
+            sid = getattr(slot, "slot_id", -1)
+            if sid > newest_id:
+                newest_id = sid
+                newest = slot
+        if best is not None and best_notional > 0:
+            return best
+        return newest
+
+    async def _force_close_slot(self, slot, reason: str):
+        """Force-close one grid slot (reduce-only flatten + cancel). Mirrors the
+        manual-close path; used by the exposure hard-cap scale-out."""
+        if not slot or getattr(slot, "close_reason", None):
+            return
+        slot.close_reason = reason
+        try:
+            slot.state.is_active = False
+        except Exception:
+            pass
+        if slot.task and not slot.task.done():
+            slot.task.cancel()
+            return
+        await self._on_grid_closed(slot, reason)
 
 
 
@@ -1798,6 +1891,27 @@ class MultiGridManager:
         await self._sync_live_wallet()
 
         free_slots = self.max_grids - len(self.slots)
+
+        # ── Dynamic real-margin exposure gate (authoritative) ────────────
+        # Stop opening NEW grids once REAL Bybit margin usage reaches the
+        # deploy cap. The in-memory risk_monitor estimate is blind to order
+        # margin (it let exposure drift to 85-88%), so gate on the live
+        # fetch_balance figure. Fail-closed: if exposure can't be read, deploy
+        # nothing this cycle. Zero free_slots (rather than early-return) so the
+        # wallet auto-loss-close safety below still runs.
+        if not DRY_RUN and free_slots > 0:
+            real_exp = await self._real_exposure_pct()
+            if real_exp is None:
+                logger.warning(
+                    "🛡️ EXPOSURE GATE: real margin unavailable — no new deploys this cycle (fail-closed)"
+                )
+                free_slots = 0
+            elif real_exp >= EXPOSURE_DEPLOY_CAP_PCT:
+                logger.info(
+                    f"🛡️ EXPOSURE GATE: real margin {real_exp:.1f}% >= "
+                    f"{EXPOSURE_DEPLOY_CAP_PCT:.0f}% cap — holding at {len(self.slots)} grids"
+                )
+                free_slots = 0
 
         now = time.time()
 
