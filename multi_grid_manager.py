@@ -1284,6 +1284,23 @@ class MultiGridManager:
         except Exception as exc:
             logger.warning(f"Live wallet sync failed: {exc}")
 
+    async def _live_equity(self) -> "float | None":
+        """Read-only live equity (totalEquity) for reconciliation.
+
+        Unlike _sync_live_wallet this does NOT mutate the wallet tracker — the
+        caller decides whether to re-anchor. Returns None on failure or in
+        dry-run so callers can fall back to the in-memory book.
+        """
+        if DRY_RUN:
+            return None
+        try:
+            balance = await self.grid_calc.exchange.fetch_balance({"type": "swap"})
+            equity, _avail, _used = self._extract_live_wallet_from_balance(balance)
+            return equity if equity and equity > 0 else None
+        except Exception as e:
+            logger.warning(f"live equity fetch failed: {e}")
+            return None
+
 
 
     # ── Lifecycle ─────────────────────────────────────────────
@@ -1545,6 +1562,13 @@ class MultiGridManager:
         qty = float(exec_data.get("execQty", 0) or 0)
         price = float(exec_data.get("execPrice", 0) or 0)
         exec_type = exec_data.get("execType", "")
+        # Venue-authoritative PnL accounting fields (Bybit V5 execution topic):
+        #   execFee   — settle-coin fee for THIS execution (always a cost to net out)
+        #   closedPnl — realized PnL booked by THIS execution (non-zero only on
+        #               reducing fills). We forward both so the engine books
+        #               real, fee-inclusive PnL instead of the gross spread.
+        fee = float(exec_data.get("execFee", 0) or 0)
+        closed_pnl = float(exec_data.get("closedPnl", 0) or 0)
 
         # Only forward actual trade fills (skip funding, settlement, etc.).
         if exec_type and exec_type != "Trade":
@@ -1559,9 +1583,10 @@ class MultiGridManager:
         if engine is None:
             engine = self._live_engines.get(self._normalize_ws_symbol(symbol))
         if engine and hasattr(engine, "notify_fill"):
-            engine.notify_fill(order_id, side, qty, price)
+            engine.notify_fill(order_id, side, qty, price, fee=fee, closed_pnl=closed_pnl)
             logger.info(
-                f"🔴 Execution routed: {symbol} {side} {qty} @ {price} (order_id={order_id[:12]}…)"
+                f"🔴 Execution routed: {symbol} {side} {qty} @ {price} "
+                f"fee=${fee:.4f} closedPnl=${closed_pnl:.4f} (order_id={order_id[:12]}…)"
             )
         else:
             logger.warning(
@@ -2832,14 +2857,30 @@ class MultiGridManager:
                     if fills_after > fills_before and hasattr(slot.state, 'fills'):
                         for fill in slot.state.fills[fills_before:]:
                             try:
+                                # Live fills are dicts (see live_engine
+                                # _process_fill_queue); dry-run fills are SimFill
+                                # objects with .sim_pnl. Handle both so the
+                                # trades table reflects real side/price/qty/fee/
+                                # order_id instead of the old unknown/0/0/sim_0.
+                                if isinstance(fill, dict):           # LIVE path
+                                    f_side  = fill.get("side", "unknown")
+                                    f_price = fill.get("price", 0.0)
+                                    f_qty   = fill.get("qty", 0.0)
+                                    f_pnl   = fill.get("pnl", 0.0)        # already net of fee
+                                    f_fee   = fill.get("fee", 0.0)
+                                    f_oid   = fill.get("order_id", "") or "live"
+                                else:                                # DRY-RUN path (SimFill)
+                                    f_side  = getattr(fill, "side", "unknown")
+                                    f_price = getattr(fill, "price", 0.0)
+                                    f_qty   = getattr(fill, "qty", 0.0)
+                                    f_pnl   = getattr(fill, "sim_pnl", getattr(fill, "pnl_from_fill", 0.0))
+                                    f_fee   = 0.0
+                                    f_oid   = f"sim_{getattr(fill, 'level_index', 0)}"
                                 self.journal.record_fill(
                                     grid_id=slot.state.grid.grid_id,
                                     symbol=slot.symbol,
-                                    side=getattr(fill, 'side', 'unknown'),
-                                    price=getattr(fill, 'price', 0),
-                                    qty=getattr(fill, 'qty', 0),
-                                    realized_pnl=getattr(fill, 'sim_pnl', 0),
-                                    order_id=f"sim_{getattr(fill, 'level_index', 0)}",
+                                    side=f_side, price=f_price, qty=f_qty,
+                                    realized_pnl=f_pnl, fee=f_fee, order_id=f_oid,
                                 )
                             except Exception as e:
                                 logger.error(f"Failed to record fill: {e}")
@@ -3185,6 +3226,8 @@ class MultiGridManager:
 
             fill_danger = _fill_danger_from_slot(slot)
 
+            cycle_fees = float(getattr(getattr(slot.state, "position", None), "fees_paid", 0.0) or 0.0)
+
             self.journal.record_cycle_close(
 
                 grid_id=slot.state.grid.grid_id,
@@ -3194,6 +3237,8 @@ class MultiGridManager:
                 realized_pnl=realized,
 
                 unrealized_pnl=unrealized,
+
+                fees_total=cycle_fees,
 
                 fills=fills,
 
@@ -3298,6 +3343,33 @@ class MultiGridManager:
         # only `realized` was banked, which dropped the unrealized portion
         # and produced a small drift between wallet.balance and stats.total_pnl.
         self.wallet_tracker.remove_position(slot.symbol, realized_pnl=total_pnl)
+
+        # Phase 1.4 — reconcile the bot's book against the real Bybit account.
+        # In live mode, real equity is the source of truth: log book-vs-live
+        # drift as proof the fee-inclusive accounting holds, then re-anchor the
+        # wallet to real equity so the next cycle measures against the true
+        # account rather than the accumulated book. remove_position's
+        # add_realized_pnl above then only matters as the dry-run / fetch-failed
+        # fallback. Acceptance: |drift| stays within ~$0.05 (funding/rounding).
+        if not DRY_RUN:
+            try:
+                book_balance = self.wallet_tracker.get_balance()
+                fees = float(getattr(getattr(slot.state, "position", None), "fees_paid", 0.0) or 0.0)
+                live_equity = await self._live_equity()
+                if live_equity is not None:
+                    logger.info(
+                        f"💵 RECONCILE | {slot.symbol} cycle_pnl=${total_pnl:+.4f} "
+                        f"fees=${fees:.4f} | book=${book_balance:.2f} "
+                        f"live=${live_equity:.2f} | drift=${book_balance - live_equity:+.3f}"
+                    )
+                    self.wallet_tracker.set_live_balance(equity=live_equity)
+                else:
+                    logger.warning(
+                        f"💵 RECONCILE | {slot.symbol}: live equity fetch failed — "
+                        f"keeping book ${book_balance:.2f} (add_realized_pnl fallback)"
+                    )
+            except Exception as e:
+                logger.error(f"Reconcile/equity sync failed: {e}")
 
 
 
