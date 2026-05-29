@@ -247,6 +247,11 @@ LIVE_MIN_AVAILABLE_MARGIN_TO_DEPLOY = float(os.getenv("LIVE_MIN_AVAILABLE_MARGIN
 # Hard cap: force-close the largest grid to shed margin if real exposure breaches this.
 EXPOSURE_DEPLOY_CAP_PCT = float(os.getenv("MAX_TOTAL_WALLET_EXPOSURE_PCT", str(MAX_TOTAL_WALLET_EXPOSURE_PCT)))
 EXPOSURE_HARD_CAP_PCT = float(os.getenv("EXPOSURE_HARD_CAP_PCT", str(EXPOSURE_DEPLOY_CAP_PCT + 5.0)))
+# Min grid age before the exposure hard-cap may cancel it — avoids churning
+# freshly-deployed grids. The hard-cap only ever cancels EMPTY grids (no open
+# position) so it never realizes a loss for portfolio-exposure reasons; grids
+# holding positions are left to their own drawdown / smart-close logic.
+EXPOSURE_REAP_MIN_AGE_SEC = float(os.getenv("EXPOSURE_REAP_MIN_AGE_SEC", "120"))
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -1789,29 +1794,44 @@ class MultiGridManager:
             if real_exp is not None and real_exp >= EXPOSURE_HARD_CAP_PCT:
                 victim = self._pick_scale_out_victim()
                 if victim is not None:
+                    # Only ever an EMPTY grid here — cancelling its resting
+                    # orders frees margin with NO realized loss.
                     logger.warning(
                         f"🛑 EXPOSURE HARD CAP: real margin {real_exp:.1f}% >= "
-                        f"{EXPOSURE_HARD_CAP_PCT:.0f}% — force-closing slot #{victim.slot_id} "
-                        f"{victim.symbol} to shed margin"
+                        f"{EXPOSURE_HARD_CAP_PCT:.0f}% — cancelling empty grid #{victim.slot_id} "
+                        f"{victim.symbol} (frees order margin, no realized loss)"
                     )
                     try:
                         await self.alerter.send_message(
                             f"🛑 EXPOSURE {real_exp:.1f}% ≥ {EXPOSURE_HARD_CAP_PCT:.0f}% — "
-                            f"closing {victim.symbol} (#{victim.slot_id})"
+                            f"cancelling empty grid {victim.symbol} (#{victim.slot_id})"
                         )
                     except Exception:
                         pass
                     await self._force_close_slot(victim, "exposure_hard_cap")
+                else:
+                    # All grids hold positions — do NOT force-close any of them
+                    # for exposure reasons (that realized premature losses). The
+                    # deploy gate already blocks new grids; each open grid is left
+                    # to its own drawdown / smart-close logic.
+                    logger.warning(
+                        f"🛑 EXPOSURE HARD CAP: real margin {real_exp:.1f}% >= "
+                        f"{EXPOSURE_HARD_CAP_PCT:.0f}% but all grids hold positions — "
+                        f"deferring to per-grid close logic (not realizing losses for exposure)"
+                    )
 
         # Also update wallet tracker with current state
         self._update_wallet_tracker()
 
     def _pick_scale_out_victim(self):
-        """Choose a grid to close to shed the most real margin: the largest open
-        position notional first; if every grid is flat, the most recently
-        deployed slot (undo the newest addition). Skips slots already closing."""
-        best = None
-        best_notional = -1.0
+        """Pick a grid the exposure hard-cap can cancel at ZERO realized cost: an
+        EMPTY grid (no open position — just resting limit orders) old enough to
+        not churn a freshly-deployed grid. Newest eligible grid first (undo the
+        most recent margin addition). Returns None if every grid holds a
+        position — in that case the caller defers to each grid's own drawdown /
+        smart-close logic rather than realizing a loss for portfolio-exposure
+        reasons (that premature-close behaviour was the old bug)."""
+        now = time.time()
         newest = None
         newest_id = -1
         for slot in self.slots.values():
@@ -1820,17 +1840,18 @@ class MultiGridManager:
             try:
                 st = slot.engine.get_status()
             except Exception:
-                st = {}
-            notional = abs(float(st.get("position_qty", 0) or 0)) * float(st.get("entry_price", 0) or 0)
-            if notional > best_notional:
-                best_notional = notional
-                best = slot
+                continue
+            # Skip grids holding a position — never realize their PnL here.
+            if abs(float(st.get("position_qty", 0) or 0)) > 0:
+                continue
+            # Skip freshly-deployed grids to avoid deploy→cancel churn.
+            age = now - float(getattr(slot, "started_at", now) or now)
+            if age < EXPOSURE_REAP_MIN_AGE_SEC:
+                continue
             sid = getattr(slot, "slot_id", -1)
             if sid > newest_id:
                 newest_id = sid
                 newest = slot
-        if best is not None and best_notional > 0:
-            return best
         return newest
 
     async def _force_close_slot(self, slot, reason: str):
