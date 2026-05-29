@@ -16,7 +16,7 @@ services:
       GRID_TRADER_UI_DIST_DIR: /app/frontend_dist
       HUMMINGBOT_HOME: /data/hummingbot
       PYTHONUNBUFFERED: "1"
-      EXCHANGE: "bybit"
+      EXCHANGE: "binance"
     ports:
       - "8765:8765"
     dns:

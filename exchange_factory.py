@@ -13,14 +13,6 @@ import ccxt.async_support as ccxt
 
 logger = logging.getLogger(__name__)
 
-# Keys — loaded from env after runtime overlay has applied
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-TRADING_MODE = os.getenv("TRADING_MODE", "testnet")
-EXCHANGE = os.getenv("EXCHANGE", "bybit")  # "bybit" | "binance"
-
 # ── Bybit URLs ──────────────────────────────────────────────
 BYBIT_TESTNET_REST = "https://api-testnet.bybit.com"
 BYBIT_MAINNET_REST = "https://api.bybit.com"
@@ -32,39 +24,45 @@ BINANCE_MAINNET_REST = "https://api.binance.com"
 
 def _create_bybit() -> ccxt.Exchange:
     """Create a Bybit linear perpetuals exchange."""
-    opts = {
-        "apiKey": BYBIT_API_KEY,
-        "secret": BYBIT_API_SECRET,
+    key = os.getenv("BYBIT_API_KEY", "")
+    secret = os.getenv("BYBIT_API_SECRET", "")
+    trading_mode = os.getenv("TRADING_MODE", "testnet")
+    opts: dict = {
+        "apiKey": key,
+        "secret": secret,
         "enableRateLimit": True,
         "options": {"defaultType": "linear"},
     }
-    if TRADING_MODE == "testnet":
+    if trading_mode == "testnet":
         opts["urls"] = {
             "api": {
                 "public": BYBIT_TESTNET_REST,
                 "private": BYBIT_TESTNET_REST,
             }
         }
-    logger.info(f"Bybit exchange created (mode={TRADING_MODE})")
+    logger.info(f"Bybit exchange created (mode={trading_mode})")
     return ccxt.bybit(opts)
 
 
 def _create_binance() -> ccxt.Exchange:
     """Create a Binance Futures (USDⓈ-M) exchange."""
-    opts = {
-        "apiKey": BINANCE_API_KEY,
-        "secret": BINANCE_API_SECRET,
+    key = os.getenv("BINANCE_API_KEY", "")
+    secret = os.getenv("BINANCE_API_SECRET", "")
+    trading_mode = os.getenv("TRADING_MODE", "testnet")
+    opts: dict = {
+        "apiKey": key,
+        "secret": secret,
         "enableRateLimit": True,
         "options": {"defaultType": "future"},
     }
-    if TRADING_MODE == "testnet":
+    if trading_mode == "testnet":
         opts["urls"] = {
             "api": {
                 "public": BINANCE_TESTNET_REST,
                 "private": BINANCE_TESTNET_REST,
             }
         }
-    logger.info(f"Binance Futures exchange created (mode={TRADING_MODE})")
+    logger.info(f"Binance Futures exchange created (mode={trading_mode})")
     return ccxt.binance(opts)
 
 
@@ -83,12 +81,12 @@ def create_exchange() -> ccxt.Exchange:
     Raises:
         ValueError: if EXCHANGE is not a known exchange.
     """
-    exchange_name = EXCHANGE.lower()
+    exchange_name = os.getenv("EXCHANGE", "bybit").lower()
     factory = _factories.get(exchange_name)
     if not factory:
         supported = ", ".join(sorted(_factories))
         raise ValueError(
-            f"Unknown exchange '{EXCHANGE}'. "
+            f"Unknown exchange '{exchange_name}'. "
             f"Set EXCHANGE to one of: {supported}"
         )
     return factory()
@@ -96,12 +94,13 @@ def create_exchange() -> ccxt.Exchange:
 
 def get_exchange_name() -> str:
     """Return the active exchange name (for logging/UI)."""
-    return EXCHANGE.lower()
+    return os.getenv("EXCHANGE", "bybit").lower()
 
 
 def has_api_keys() -> bool:
     """Check if API keys are configured for the active exchange."""
-    if EXCHANGE.lower() == "binance":
+    exchange = os.getenv("EXCHANGE", "bybit").lower()
+    if exchange == "binance":
         key = os.getenv("BINANCE_API_KEY", "").strip()
         secret = os.getenv("BINANCE_API_SECRET", "").strip()
         return bool(key and key != "your_api_key_here" and secret and secret != "your_secret_here")
@@ -113,6 +112,8 @@ def has_api_keys() -> bool:
 
 def get_exchange_label() -> str:
     """Return a human-readable label: 'Bybit Linear' or 'Binance Futures'."""
-    labels = {"bybit": "Bybit Linear Testnet" if TRADING_MODE == "testnet" else "Bybit Linear",
-              "binance": "Binance Futures Testnet" if TRADING_MODE == "testnet" else "Binance Futures"}
-    return labels.get(EXCHANGE.lower(), EXCHANGE.upper())
+    trading_mode = os.getenv("TRADING_MODE", "testnet")
+    exchange = os.getenv("EXCHANGE", "bybit").lower()
+    labels = {"bybit": "Bybit Linear Testnet" if trading_mode == "testnet" else "Bybit Linear",
+              "binance": "Binance Futures Testnet" if trading_mode == "testnet" else "Binance Futures"}
+    return labels.get(exchange, exchange.upper())
