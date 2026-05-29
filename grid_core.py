@@ -30,6 +30,7 @@ class GridPosition:
     entry_price: float = 0.0
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
+    fees_paid: float = 0.0  # cumulative execFee for this cycle (settle coin)
     opened_at: float = 0.0  # timestamp when position opened
     last_fill_at: float = 0.0  # timestamp of most recent fill (for post-fill cooldown)
     scaled_out: bool = False  # True after a partial-close at the hard floor
@@ -982,18 +983,32 @@ def process_fill(
     fill: FillEvent,
     position: GridPosition,
     imbalance: GridImbalance,
+    fee: float = 0.0,
+    exchange_pnl: Optional[float] = None,
 ) -> float:
     """
     Process a fill event and update position state.
-    
-    Returns the PnL from this fill (positive = profit, negative = loss).
-    Updates position in-place.
+
+    Returns the realized PnL booked by this fill (positive = profit,
+    negative = loss). Updates position in-place.
+
+    PnL accounting (live vs dry-run):
+      - ``exchange_pnl`` (Bybit ``closedPnl``) is the venue-authoritative
+        realized PnL for the closed portion of a reducing fill. When supplied
+        it OVERRIDES the locally computed gross spread — the exchange is the
+        source of truth.
+      - ``fee`` (Bybit ``execFee``) is the fee for THIS execution and is
+        always netted out of realized PnL, on opening fills too (an opening
+        fill has no closedPnl but still pays a fee).
+      - With the defaults (``fee=0``, ``exchange_pnl=None``) this collapses to
+        the original gross-spread behaviour, so dry-run is byte-for-byte
+        unchanged.
     """
     # Record in imbalance tracker
     imbalance.record_fill(fill.side)
-    
-    pnl = 0.0
-    
+
+    gross_pnl = 0.0  # locally computed spread realized by this fill (0 on open/add)
+
     if position.is_flat:
         # Opening new position
         position.side = fill.side
@@ -1001,7 +1016,7 @@ def process_fill(
         position.entry_price = fill.price
         position.opened_at = fill.timestamp
         position.unrealized_pnl = 0.0
-    
+
     elif position.side == fill.side:
         # Adding to existing position (averaging)
         total_cost = position.entry_price * position.qty + fill.price * fill.qty
@@ -1011,21 +1026,22 @@ def process_fill(
         # not the timestamp. Without this, age_seconds stays 0 forever.
         if position.opened_at <= 0:
             position.opened_at = fill.timestamp
-    
+
     else:
         # Closing or reducing position (opposite side fill)
         close_qty = min(fill.qty, position.qty)
-        
+
         if position.side == "Buy":
-            pnl = (fill.price - position.entry_price) * close_qty
+            gross_pnl = (fill.price - position.entry_price) * close_qty
         else:
-            pnl = (position.entry_price - fill.price) * close_qty
-        
-        position.realized_pnl += pnl
+            gross_pnl = (position.entry_price - fill.price) * close_qty
+
         position.qty -= close_qty
-        
+
         if position.qty <= 0:
-            # Fully closed
+            # Fully closed (realized_pnl / fees_paid are cycle-cumulative and
+            # are intentionally NOT reset here — only reset_position() clears
+            # them at the start of the next cycle).
             position.qty = 0.0
             position.side = ""
             position.entry_price = 0.0
@@ -1035,11 +1051,17 @@ def process_fill(
             position.scaled_out = False
         # If remaining qty > 0, position stays open with same entry
 
+    # Realized PnL for this fill: prefer venue truth, always net of fee.
+    realized_component = exchange_pnl if exchange_pnl is not None else gross_pnl
+    net_pnl = realized_component - fee
+    position.realized_pnl += net_pnl
+    position.fees_paid += fee
+
     if not position.is_flat:
         position.last_fill_at = fill.timestamp
 
-    fill.pnl_from_fill = pnl
-    return pnl
+    fill.pnl_from_fill = net_pnl
+    return net_pnl
 
 
 def check_close_conditions(
@@ -1131,6 +1153,11 @@ def reset_position(position: GridPosition):
     position.qty = 0.0
     position.entry_price = 0.0
     position.unrealized_pnl = 0.0
+    # NOTE: realized_pnl is intentionally NOT reset here — reset_position()
+    # runs on transient exchange flat-syncs, and the manager reads the cycle's
+    # realized PnL from engine status *after* the position goes flat. fees_paid
+    # mirrors realized_pnl's lifecycle (both are fresh per GridPosition / per
+    # grid deploy), so it is likewise left untouched.
     position.opened_at = 0.0
     position.last_fill_at = 0.0
     position.scaled_out = False

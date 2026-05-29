@@ -464,12 +464,18 @@ class LiveEngine:
                 side = fill_data.get("side", "")
                 qty = float(fill_data.get("qty", 0))
                 price = float(fill_data.get("price", 0))
-                
+                # Venue-authoritative figures from the execution stream.
+                fee = float(fill_data.get("fee", 0) or 0)
+                closed_pnl = float(fill_data.get("closed_pnl", 0) or 0)
+
                 level = self._find_level_by_order_id(order_id)
                 if level:
                     self.state.filled_levels.add(level.index)
-                    
-                    # Use grid_core to process fill
+
+                    # Use grid_core to process fill. Prefer Bybit's closedPnl
+                    # (non-zero only on reducing fills) over the local gross
+                    # spread, and always net out this fill's fee. process_fill
+                    # accumulates position.realized_pnl and position.fees_paid.
                     fill_event = FillEvent(
                         level_index=level.index,
                         side=side,
@@ -478,9 +484,14 @@ class LiveEngine:
                         timestamp=time.time(),
                         order_id=order_id,
                     )
-                    pnl = process_fill(fill_event, self.state.position, self.state.imbalance)
-                    
-                    # Record fill for status
+                    pnl = process_fill(
+                        fill_event, self.state.position, self.state.imbalance,
+                        fee=fee,
+                        exchange_pnl=(closed_pnl if closed_pnl != 0 else None),
+                    )
+
+                    # Record fill for status. `pnl` is now net of fee and
+                    # venue-authoritative when closedPnl was supplied.
                     fill_record = {
                         "side": side,
                         "price": price,
@@ -488,12 +499,14 @@ class LiveEngine:
                         "timestamp": time.time(),
                         "order_id": order_id,
                         "pnl": pnl,
+                        "fee": fee,
+                        "closed_pnl": closed_pnl,
                     }
                     self.state.fills.append(fill_record)
-                    
+
                     logger.info(
                         f"🔴 LIVE FILL: {side} {qty} @ {price:.4f} | "
-                        f"PnL=${pnl:.4f} | "
+                        f"PnL=${pnl:.4f} fee=${fee:.4f} closedPnl=${closed_pnl:.4f} | "
                         f"pos={self.state.position.side} {self.state.position.qty:.6f}"
                     )
                     
@@ -752,13 +765,22 @@ class LiveEngine:
 
         return status
     
-    def notify_fill(self, order_id: str, side: str, qty: float, price: float):
-        """Called by WebSocket handler when an order fills."""
+    def notify_fill(self, order_id: str, side: str, qty: float, price: float,
+                    fee: float = 0.0, closed_pnl: float = 0.0):
+        """Called by WebSocket handler when an order fills.
+
+        ``fee`` (Bybit ``execFee``) and ``closed_pnl`` (Bybit ``closedPnl``) are
+        the venue-authoritative figures for this execution; they flow through
+        the queue into _process_fill_queue so realized PnL is booked net of
+        fees from exchange truth rather than the local gross spread.
+        """
         self._fill_queue.put_nowait({
             "order_id": order_id,
             "side": side,
             "qty": qty,
             "price": price,
+            "fee": fee,
+            "closed_pnl": closed_pnl,
         })
     
     async def close(self):
