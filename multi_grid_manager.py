@@ -85,8 +85,7 @@ from config import (
 
     TARGET_PNL_LOW, TARGET_PNL_HIGH, TARGET_PNL_PCT_LOW, TARGET_PNL_PCT_HIGH, MAX_DRAWDOWN_PCT,
 
-    BASE_ORDER_SIZE_USDT, DEFAULT_LEVERAGE, BYBIT_API_KEY,
-
+    BASE_ORDER_SIZE_USDT, DEFAULT_LEVERAGE,
     MARGIN_TYPE, INITIAL_WALLET_BALANCE, TOKEN_PROFILES_PATH,
 
     MAX_TOTAL_WALLET_EXPOSURE_PCT, MAX_SINGLE_DIRECTION_EXPOSURE_PCT,
@@ -1332,17 +1331,13 @@ class MultiGridManager:
         logger.info("=" * 70)
 
 
-
-        if (not DRY_RUN) and (not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here"):
-
+        from exchange_factory import has_api_keys
+        if (not DRY_RUN) and (not has_api_keys()):
             logger.error("❌ API keys not set for live mode!")
-
             return
 
-        if DRY_RUN and (not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here"):
-
-            logger.info("🧪 Dry-run mode without Bybit API keys — live trading is impossible")
-
+        if DRY_RUN and (not has_api_keys()):
+            logger.info("🧪 Dry-run mode without API keys — live trading is impossible")
 
 
         self._running = True

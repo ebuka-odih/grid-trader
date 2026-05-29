@@ -19,7 +19,6 @@ from typing import Optional
 import ccxt.async_support as ccxt
 
 from config import (
-    BYBIT_API_KEY, BYBIT_API_SECRET, TRADING_MODE,
     DEFAULT_LEVERAGE, DEFAULT_NUM_GRIDS,
     TARGET_PNL_LOW, TARGET_PNL_HIGH,
     BASE_ORDER_SIZE_USDT, DRY_RUN,
@@ -63,22 +62,11 @@ class GridState:
 
 
 class GridEngine:
-    """Places and manages grid orders on Bybit."""
+    """Places and manages grid orders (Bybit / Binance Futures)."""
 
     def __init__(self):
-        exchange_opts = {
-            "apiKey": BYBIT_API_KEY,
-            "secret": BYBIT_API_SECRET,
-            "enableRateLimit": True,
-        }
-        if TRADING_MODE == "testnet":
-            self.exchange = ccxt.bybit({
-                **exchange_opts,
-                "options": {"defaultType": "linear"},
-                "urls": {"api": {"public": "https://api-testnet.bybit.com", "private": "https://api-testnet.bybit.com"}},
-            })
-        else:
-            self.exchange = ccxt.bybit({**exchange_opts, "options": {"defaultType": "linear"}})
+        from exchange_factory import create_exchange
+        self.exchange = create_exchange()
         self.active_grid: Optional[GridState] = None
         # Cache for symbol precision
         self._precision_cache: dict = {}

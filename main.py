@@ -24,10 +24,9 @@ from config import (
     MAX_DRAWDOWN_PCT,
     DEFAULT_LEVERAGE,
     DEFAULT_NUM_GRIDS,
-    BYBIT_API_KEY,
-    BYBIT_API_SECRET,
     DRY_RUN,
 )
+from exchange_factory import has_api_keys, get_exchange_label
 from ws_manager import BybitWSManager
 from coin_scanner import CoinScanner, CoinScore
 from grid_engine import GridEngine, GridState
@@ -75,17 +74,15 @@ class GridTraderOrchestrator:
     async def start(self):
         """Start the full agentic trading loop."""
         logger.info("=" * 60)
-        logger.info("�0 AGETIC GRID TRADER STARTING")
-        logger.info(f"   Mode: {'TESTNET' if BYBIT_API_KEY and True else 'MAINNET'}")
+        logger.info(f"🎯 AGENTIC GRID TRADER STARTING ({get_exchange_label()})")
         logger.info(f"   Target PnL: {TARGET_PNL_PCT_LOW}-{TARGET_PNL_PCT_HIGH}% of allocated margin")
         logger.info(f"   Max Drawdown: {MAX_DRAWDOWN_PCT}% of allocated margin")
         logger.info(f"   Scan Interval: {SCAN_INTERVAL_SECONDS}s")
         logger.info("=" * 60)
 
         # Validate API keys
-        if not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here":
-            logger.error("❌ API keys not set! Edit .env file with your Bybit credentials.")
-            logger.error("   Get testnet keys: https://testnet.bybit.com")
+        if not has_api_keys():
+            logger.error("❌ API keys not set! Edit .env file with your exchange credentials.")
             return
 
         self._running = True

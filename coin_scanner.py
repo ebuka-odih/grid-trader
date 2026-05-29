@@ -18,9 +18,6 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    BYBIT_API_KEY,
-    BYBIT_API_SECRET,
-    TRADING_MODE,
     MIN_24H_VOLUME_USDT,
     SCAN_TOP_N_COINS,
     MAX_24H_RANGE_PCT,
@@ -74,29 +71,11 @@ class CoinScore:
 
 
 class CoinScanner:
-    """Scans Bybit linear perpetuals to find the best coins for grid trading."""
+    """Scans exchange linear/futures perpetuals for grid trading candidates."""
 
     def __init__(self, learning: ScannerLearning | None = None):
-        exchange_opts = {
-            "apiKey": BYBIT_API_KEY,
-            "secret": BYBIT_API_SECRET,
-            "enableRateLimit": True,
-        }
-        if TRADING_MODE == "testnet":
-            self.exchange = ccxt.bybit(
-                {
-                    **exchange_opts,
-                    "options": {"defaultType": "linear"},
-                    "urls": {
-                        "api": {
-                            "public": "https://api-testnet.bybit.com",
-                            "private": "https://api-testnet.bybit.com",
-                        }
-                    },
-                }
-            )
-        else:
-            self.exchange = ccxt.bybit({**exchange_opts, "options": {"defaultType": "linear"}})
+        from exchange_factory import create_exchange
+        self.exchange = create_exchange()
         self.learning = learning or ScannerLearning()
         # Semaphore limits concurrent coin scoring to stay under Bybit rate limits.
         # 3 concurrent coins × 3 candle frames = 9 max concurrent API calls.

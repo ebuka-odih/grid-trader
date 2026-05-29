@@ -26,8 +26,9 @@ import websockets
 from config import (
     BYBIT_WS_PUBLIC, SCAN_INTERVAL_SECONDS,
     TARGET_PNL_LOW, TARGET_PNL_HIGH, MAX_DRAWDOWN_PCT,
-    BASE_ORDER_SIZE_USDT, BYBIT_API_KEY,
+    BASE_ORDER_SIZE_USDT,
 )
+from exchange_factory import has_api_keys, get_exchange_label
 from coin_scanner import CoinScanner, CoinScore
 from dry_run_engine import DryRunEngine
 from trading_agent import PreTradeDecision, MidTradeDecision
@@ -92,7 +93,7 @@ class AgenticOrchestrator:
         logger.info(f"   No real orders will be placed!")
         logger.info("=" * 60)
 
-        if not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here":
+        if not has_api_keys():
             logger.error("❌ API keys not set!")
             return
 

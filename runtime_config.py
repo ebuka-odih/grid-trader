@@ -250,6 +250,12 @@ CONFIG_SCHEMA: dict[str, FieldSpec] = {
     "TELEGRAM_CHAT_ID": FieldSpec(
         type="str", default="", category="secrets",
         label="Telegram chat ID", secret=True),
+    "BINANCE_API_KEY": FieldSpec(
+        type="str", default="", category="secrets",
+        label="Binance API key", secret=True),
+    "BINANCE_API_SECRET": FieldSpec(
+        type="str", default="", category="secrets",
+        label="Binance API secret", secret=True),
 }
 
 # Public constant: tunables (non-secret) and secrets.
@@ -373,16 +379,29 @@ def apply_overlay() -> dict[str, str]:
     dry_run = (os.environ.get("DRY_RUN", "true").strip().lower()
                in {"1", "true", "yes", "on"})
     if not dry_run:
-        bybit_key = os.environ.get("BYBIT_API_KEY", "").strip()
-        bybit_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
-        if not bybit_key or not bybit_secret:
-            logger.warning(
-                "⚠️  DRY_RUN=false but BYBIT_API_KEY/SECRET are not set. "
-                "Forcing DRY_RUN=true to avoid live-engine startup failure. "
-                "Set keys via the admin UI (Settings → API Keys), then retry."
-            )
-            os.environ["DRY_RUN"] = "true"
-            applied["DRY_RUN"] = "fallback"
+        exchange = os.environ.get("EXCHANGE", "bybit").lower()
+        if exchange == "binance":
+            key = os.environ.get("BINANCE_API_KEY", "").strip()
+            secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+            if not key or not secret:
+                logger.warning(
+                    "⚠️  DRY_RUN=false but BINANCE_API_KEY/SECRET are not set. "
+                    "Forcing DRY_RUN=true to avoid live-engine startup failure. "
+                    "Set keys via the admin UI (Settings → API Keys), then retry."
+                )
+                os.environ["DRY_RUN"] = "true"
+                applied["DRY_RUN"] = "fallback"
+        else:
+            bybit_key = os.environ.get("BYBIT_API_KEY", "").strip()
+            bybit_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
+            if not bybit_key or not bybit_secret:
+                logger.warning(
+                    "⚠️  DRY_RUN=false but BYBIT_API_KEY/SECRET are not set. "
+                    "Forcing DRY_RUN=true to avoid live-engine startup failure. "
+                    "Set keys via the admin UI (Settings → API Keys), then retry."
+                )
+                os.environ["DRY_RUN"] = "true"
+                applied["DRY_RUN"] = "fallback"
 
     return applied
 

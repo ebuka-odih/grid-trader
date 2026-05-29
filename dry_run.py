@@ -15,8 +15,8 @@ import websockets
 from config import (
     BYBIT_WS_PUBLIC, SCAN_INTERVAL_SECONDS,
     TARGET_PNL_LOW, TARGET_PNL_HIGH,
-    BYBIT_API_KEY,
 )
+from exchange_factory import has_api_keys, get_exchange_label
 from coin_scanner import CoinScanner
 from dry_run_engine import DryRunEngine, DryRunState
 from improvement_loop import ImprovementLoop
@@ -49,12 +49,12 @@ class DryRunOrchestrator:
     async def start(self):
         """Start the dry-run loop."""
         logger.info("=" * 60)
-        logger.info("🧪 DRY-RUN AGETIC GRID TRADER")
+        logger.info(f"🧪 DRY-RUN AGENTIC GRID TRADER ({get_exchange_label()})")
         logger.info(f"   Target PnL: ${TARGET_PNL_LOW}-${TARGET_PNL_HIGH}")
         logger.info(f"   No real orders will be placed!")
         logger.info("=" * 60)
 
-        if not BYBIT_API_KEY or BYBIT_API_KEY == "your_api_key_here":
+        if not has_api_keys():
             logger.error("❌ API keys not set!")
             return
 
