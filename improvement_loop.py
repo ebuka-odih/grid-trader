@@ -35,6 +35,7 @@ class TradeRecord(Base):
     price = Column(Float)
     qty = Column(Float)
     realized_pnl = Column(Float, default=0.0)
+    fee = Column(Float, default=0.0)  # venue execFee for this fill (settle coin)
     timestamp = Column(DateTime, default=datetime.utcnow)
     order_id = Column(String(100))
 
@@ -53,6 +54,7 @@ class GridCycleRecord(Base):
     total_pnl = Column(Float)
     realized_pnl = Column(Float, default=0.0)
     unrealized_pnl_at_close = Column(Float, default=0.0)
+    fees_total = Column(Float, default=0.0)  # cumulative execFee paid this cycle
     fills_count = Column(Integer, default=0)
     duration_seconds = Column(Float, default=0.0)
     started_at = Column(DateTime, default=datetime.utcnow)
@@ -126,10 +128,40 @@ class ImprovementLoop:
         self.Session = sessionmaker(bind=self.engine)
         logger.info(f"📊 Trade journal v2 initialized: {db_path}")
 
+    def _migrate_table_columns(self, table_name: str, model):
+        """Add any model columns missing from an existing SQLite table.
+
+        Idempotent: only ALTERs columns that aren't already present, so it is
+        safe to run on every startup. Returns the list of added column names.
+        """
+        inspector = inspect(self.engine)
+        if table_name not in set(inspector.get_table_names()):
+            return []
+
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        missing_columns = [
+            col for col in model.__table__.columns
+            if col.name not in existing_columns and not col.primary_key
+        ]
+        if not missing_columns:
+            return []
+
+        with self.engine.begin() as conn:
+            for column in missing_columns:
+                column_type = column.type.compile(dialect=self.engine.dialect)
+                conn.execute(text(
+                    f"ALTER TABLE {table_name} ADD COLUMN {column.name} {column_type}"
+                ))
+                logger.info(f"📊 Migrated {table_name}: added column {column.name}")
+        return [c.name for c in missing_columns]
+
     def _migrate_existing_schema(self):
         """Add v2 columns to existing SQLite DBs without dropping trade history."""
         if self.engine.dialect.name != "sqlite":
             return
+
+        # trades.fee (Phase 1): additive, default 0.0 — safe on rollback too.
+        self._migrate_table_columns("trades", TradeRecord)
 
         inspector = inspect(self.engine)
         existing_tables = set(inspector.get_table_names())
@@ -175,18 +207,19 @@ class ImprovementLoop:
     # ── Record Trades ──────────────────────────────────────────
 
     def record_fill(self, grid_id: str, symbol: str, side: str, price: float,
-                    qty: float, realized_pnl: float = 0.0, order_id: str = ""):
+                    qty: float, realized_pnl: float = 0.0, fee: float = 0.0,
+                    order_id: str = ""):
         """Record a single fill/execution."""
         session = self.Session()
         try:
             trade = TradeRecord(
                 grid_id=grid_id, symbol=symbol, side=side,
                 price=price, qty=qty, realized_pnl=realized_pnl,
-                order_id=order_id,
+                fee=fee, order_id=order_id,
             )
             session.add(trade)
             session.commit()
-            logger.info(f"📝 Fill recorded: {side} {qty} @ {price:.4f} pnl=${realized_pnl:.4f}")
+            logger.info(f"📝 Fill recorded: {side} {qty} @ {price:.4f} pnl=${realized_pnl:.4f} fee=${fee:.4f}")
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to record fill: {e}")
@@ -245,7 +278,8 @@ class ImprovementLoop:
                            close_reason: str, wallet_balance: float = 0.0,
                            wallet_exposure_pct: float = 0.0, direction: str = "neutral",
                            adjusted_leverage: int = 0, adjusted_order_size: float = 0.0,
-                           fill_danger: str = "low", fill_danger_score: float = 0.0):
+                           fill_danger: str = "low", fill_danger_score: float = 0.0,
+                           fees_total: float = 0.0):
         """Record the close of a grid cycle with v2 wallet context."""
         session = self.Session()
         try:
@@ -254,6 +288,7 @@ class ImprovementLoop:
                 cycle.total_pnl = total_pnl
                 cycle.realized_pnl = realized_pnl
                 cycle.unrealized_pnl_at_close = unrealized_pnl
+                cycle.fees_total = fees_total
                 cycle.fills_count = fills
                 cycle.duration_seconds = duration
                 cycle.closed_at = datetime.utcnow()
