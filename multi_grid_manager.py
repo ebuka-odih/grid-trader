@@ -252,6 +252,12 @@ EXPOSURE_HARD_CAP_PCT = float(os.getenv("EXPOSURE_HARD_CAP_PCT", str(EXPOSURE_DE
 # position) so it never realizes a loss for portfolio-exposure reasons; grids
 # holding positions are left to their own drawdown / smart-close logic.
 EXPOSURE_REAP_MIN_AGE_SEC = float(os.getenv("EXPOSURE_REAP_MIN_AGE_SEC", "120"))
+# When false (default), deploy ONE trend-aware grid per symbol (long_pullback /
+# short_rebound / neutral_scalp via classify_grid_style) instead of a hedged
+# long+short EDGE PAIR. Single-direction frees a slot + margin per symbol and
+# actually captures the chosen direction; the dual pair self-hedges and burned
+# two slots per coin. Set true to restore the old straddle behaviour.
+DUAL_DIRECTION_ENABLED = str(os.getenv("DUAL_DIRECTION_ENABLED", "false")).lower() in ("1", "true", "yes", "on")
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -2397,8 +2403,15 @@ class MultiGridManager:
             trend = getattr(coin, "trend_direction", "neutral") or "neutral"
 
             # A coin qualifies for dual-direction if it's strongly mean-reverting
-            # and not trending strongly in one direction
-            qualifies_for_dual = mr > MR_THRESHOLD and trend in ("neutral", "long", "short")
+            # and not trending strongly in one direction. Gated behind
+            # DUAL_DIRECTION_ENABLED (default off): when disabled, every symbol
+            # routes through the single trend-aware grid path below — one slot,
+            # one direction, no self-hedging.
+            qualifies_for_dual = (
+                DUAL_DIRECTION_ENABLED
+                and mr > MR_THRESHOLD
+                and trend in ("neutral", "long", "short")
+            )
 
             if qualifies_for_dual and mr > MR_THRESHOLD:
                 # ── Deploy BOTH a long grid and a short grid ──
