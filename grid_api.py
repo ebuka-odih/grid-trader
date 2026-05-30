@@ -339,13 +339,18 @@ def _load_db_performance(limit: int = 50) -> tuple[dict, list[dict]]:
         cursor.execute("SELECT COALESCE(SUM(total_pnl), 0) FROM grid_cycles WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0")
         total_pnl = float(cursor.fetchone()[0] or 0.0)
         win_rate = (wins / total_trades * 100) if total_trades else 0.0
+        # History list shows ALL closed cycles — including 0-fill grids that were
+        # deployed and recycled without trading (close_reason=no_fills_timeout).
+        # Stats above stay filtered to fills>0 so empties don't dilute win-rate/PnL,
+        # but the list must show them so the active-count dropping (e.g. 13->7) is
+        # explained instead of looking like trades vanished silently.
         cursor.execute(f"""
             SELECT grid_id, symbol, started_at, closed_at, close_reason,
                    total_pnl, realized_pnl, fills_count, duration_seconds,
                    upper_price, lower_price, num_grids, leverage, was_profitable,
                    {order_size_expr}
             FROM grid_cycles
-            WHERE closed_at IS NOT NULL AND COALESCE(fills_count, 0) > 0
+            WHERE closed_at IS NOT NULL
             ORDER BY closed_at DESC
             LIMIT ?
         """, (limit,))
