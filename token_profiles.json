@@ -472,7 +472,26 @@
       2.0,
       4.0
     ],
-    "max_leverage": 100
+    "max_leverage": 100,
+    "progressive_sizing_enabled": true,
+    "progressive_min_factor": 0.35,
+    "progressive_max_factor": 2.0,
+    "progressive_curve_power": 1.5,
+    "double_down_enabled": true,
+    "double_down_factor": 1.8,
+    "double_down_max_entries": 3,
+    "double_down_spacing_pct": 1.2,
+    "double_down_min_loss_pct": 1.5,
+    "double_down_max_loss_pct": 8.0,
+    "trailing_profit_enabled": true,
+    "trailing_profit_threshold_pct": 0.5,
+    "trailing_profit_retracement_pct": 0.2,
+    "unstuck_enabled": true,
+    "unstuck_loss_allowance_pct": 4.0,
+    "unstuck_min_loss_pct": 2.0,
+    "unstuck_min_age_minutes": 10,
+    "unstuck_close_fraction": 0.08,
+    "unstuck_cooldown_minutes": 5
   },
   "blacklist": [
     "ACE",
