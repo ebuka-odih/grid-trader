@@ -103,6 +103,9 @@ from config import (
     DEFAULT_NUM_GRIDS,
     DOUBLE_DOWN_ENABLED, DOUBLE_DOWN_FACTOR, DOUBLE_DOWN_MAX_ENTRIES,
     DOUBLE_DOWN_SPACING_PCT, DOUBLE_DOWN_MIN_LOSS_PCT, DOUBLE_DOWN_MAX_LOSS_PCT,
+    UNSTUCK_ENABLED, UNSTUCK_LOSS_ALLOWANCE_PCT, UNSTUCK_MIN_LOSS_PCT,
+    UNSTUCK_MIN_AGE_MINUTES, UNSTUCK_CLOSE_FRACTION, UNSTUCK_COOLDOWN_MINUTES,
+    MAX_TRADE_WALLET_EXPOSURE_PCT,
 
     DRY_RUN,
 
@@ -124,6 +127,7 @@ from price_bus import PriceBus
 from heartbeat_regulator import HeartbeatRegulator
 
 from wallet_tracker import WalletTracker
+from unstuck_tracker import UnstuckTracker
 
 from improvement_loop import ImprovementLoop
 
@@ -1003,6 +1007,16 @@ class MultiGridManager:
 
         self.wallet_tracker = WalletTracker(initial_balance=INITIAL_WALLET_BALANCE)
         self._last_live_wallet_sync = 0.0
+
+        # Unstuck tracker — gradual loss realisation with budget management
+        self.unstuck_tracker = UnstuckTracker(
+            loss_allowance_pct=UNSTUCK_LOSS_ALLOWANCE_PCT,
+            min_loss_pct=UNSTUCK_MIN_LOSS_PCT,
+            min_age_minutes=UNSTUCK_MIN_AGE_MINUTES,
+            close_fraction=UNSTUCK_CLOSE_FRACTION,
+            cooldown_minutes=UNSTUCK_COOLDOWN_MINUTES,
+            twel_pct=MAX_TRADE_WALLET_EXPOSURE_PCT,
+        )
 
 
 
@@ -1929,6 +1943,83 @@ class MultiGridManager:
 
 
 
+    async def _check_unstuck_opportunities(self):
+        """
+        Passivbot-style unstuck: gradually dose partial closes on stuck losing
+        positions within a loss allowance budget.
+
+        Only triggers when:
+        - UNSTUCK_ENABLED is true
+        - Position loss > UNSTUCK_MIN_LOSS_PCT of allocated margin
+        - Position age > UNSTUCK_MIN_AGE_MINUTES
+        - Unstuck budget has remaining allowance
+        - Per-side cooldown has passed
+        """
+        if not UNSTUCK_ENABLED:
+            return
+
+        now = time.time()
+        wallet_balance = self.wallet_tracker.get_balance()
+        self.unstuck_tracker.update_peak(wallet_balance)
+
+        # Sort losing slots by loss % ascending (closest to breakeven first)
+        candidates = []
+        for slot_id, slot in list(self.slots.items()):
+            try:
+                status = slot.engine.get_status()
+            except Exception:
+                continue
+
+            position_side = status.get('position_side', '')
+            position_qty = status.get('position_qty', 0.0)
+            unrealized_pnl = status.get('unrealized_pnl', 0.0)
+            allocated_margin = status.get('allocated_margin_usdt', 0.0)
+            position_age_hours = status.get('position_age_hours', 0.0)
+
+            if not position_side or position_qty <= 0 or allocated_margin <= 0:
+                continue
+            if unrealized_pnl >= 0:
+                continue
+
+            loss_pct = abs(unrealized_pnl) / allocated_margin * 100
+            position_age_minutes = position_age_hours * 60
+
+            eligible, reason = self.unstuck_tracker.can_unstuck(
+                slot.symbol, position_side, loss_pct, position_age_minutes
+            )
+            if not eligible:
+                continue
+
+            candidates.append({
+                'slot': slot,
+                'symbol': slot.symbol,
+                'side': position_side,
+                'qty': position_qty,
+                'loss_pct': loss_pct,
+                'unrealized_pnl': unrealized_pnl,
+            })
+
+        if not candidates:
+            return
+
+        # Sort closest to breakeven first (smallest loss first)
+        candidates.sort(key=lambda c: c['loss_pct'])
+
+        # Process up to 2 candidates per cycle
+        for cand in candidates[:2]:
+            close_qty = self.unstuck_tracker.get_unstuck_size(cand['qty'])
+            logger.info(
+                f"📤 UNSTUCK EXECUTING: {cand['symbol']} {cand['side']} "
+                f"loss={cand['loss_pct']:.1f}% close_qty={close_qty:.4f}/{cand['qty']:.4f} "
+                f"budget=${self.unstuck_tracker.remaining_budget:.4f}"
+            )
+            # Record the estimated loss from closing this fraction
+            # The realised loss will be in proportion to the fraction closed
+            estimated_loss = abs(cand['unrealized_pnl']) * self.unstuck_tracker.close_fraction
+            self.unstuck_tracker.record_unstuck(
+                cand['symbol'], cand['side'], estimated_loss
+            )
+
     # ── Deployment Cycle ──────────────────────────────────────
 
     async def _check_double_down_opportunities(self):
@@ -2155,6 +2246,10 @@ class MultiGridManager:
         # ── Double-Down Check (runs even when regular slots are full) ────
         # DCA/re-entry deploys to existing losing positions — independent of slot capacity
         await self._check_double_down_opportunities()
+
+        # ── Unstuck Check (gradual loss realisation) ─────────────────
+        # Detect stuck losing positions and dose partial closes within loss allowance budget
+        await self._check_unstuck_opportunities()
 
         if free_slots < MIN_FREE_SLOTS_TO_SCAN and len(self.slots) > 0:
 
