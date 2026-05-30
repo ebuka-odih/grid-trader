@@ -2507,19 +2507,31 @@ class MultiGridManager:
                     token_profile=profile,
                     wallet_balance=wallet_balance,
                 )
-                # Scalp mode: override to a tight NEUTRAL band straddling current
-                # price so the grid fills on small oscillations (buy just below /
-                # sell just above) instead of an offset directional zone that
-                # waits for a pullback and mostly times out unfilled.
-                if SCALP_MODE_ENABLED and price > 0:
+                # ── Regime-aware placement (market awareness) ──
+                # A NEUTRAL scalp grid only wins on a RANGING coin. On a trending
+                # coin it fights the move (buys the dump / sells the rip) and
+                # bleeds via drawdown stops — that was the account-bleed source.
+                # So: ranging -> tight neutral scalp band; trending -> keep the
+                # trend-ALIGNED directional decision from classify_grid_style
+                # (long_pullback in an uptrend, short_rebound in a downtrend), so
+                # we ride the trend instead of fighting it.
+                regime = _candidate_market_regime(coin)
+                if SCALP_MODE_ENABLED and price > 0 and regime == "ranging":
                     hw = SCALP_HALF_WIDTH_PCT / 100.0
                     _dp = max(2, 8 - int(price))
                     decision.upper = round(price * (1.0 + hw), _dp)
                     decision.lower = round(price * (1.0 - hw), _dp)
                     decision.direction = "neutral"
                     decision.reasoning = (
-                        f"scalp: neutral band ±{SCALP_HALF_WIDTH_PCT:.2f}% around ${price:.4f} "
+                        f"scalp neutral (ranging) ±{SCALP_HALF_WIDTH_PCT:.2f}% @ ${price:.4f} "
                         f"({decision.num_grids} levels)"
+                    )
+                else:
+                    # Trending/volatile: do NOT place a neutral grid against the
+                    # trend — keep the directional, trend-aligned ladder.
+                    decision.reasoning = (
+                        f"trend-aligned {getattr(decision, 'direction', 'neutral')} "
+                        f"(regime={regime}, style={getattr(coin, 'grid_style', '?')})"
                     )
                 direction_label = getattr(decision, "direction", "neutral") or "neutral"
                 decision.reasoning = (
