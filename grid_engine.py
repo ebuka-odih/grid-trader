@@ -228,6 +228,9 @@ class GridEngine:
                 factor = max(0.3, min(1.0, factor))  # clamp 30%-100%
                 level_qty = self._round_to_precision(qty_per_level * factor, qty_precision)
                 level_qty = max(level_qty, min_qty)
+                # Ensure notional meets minimum ($5 notional)
+                if level_qty * price < 5.0:
+                    level_qty = self._round_to_precision(5.0 / price, qty_precision)
             # v5: Progressive (martingale) sizing — grows away from center
             elif progressive_sizing_enabled:
                 # Per-side distance: 0 at current price, 1 at the range edge
@@ -238,11 +241,15 @@ class GridEngine:
                     side_span = upper - current_price
                     dist = (price - current_price) / max(side_span, 1e-8)
                 dist = min(dist, 1.0)
-                # factor climbs from min_factor (near) to max_factor (far)
-                factor = progressive_min_factor + (progressive_max_factor - progressive_min_factor) * (dist ** progressive_curve_power)
+                # factor DECLINES from max_factor (near/center) to min_factor (far/edges)
+                # Passivbot-style: center=biggest fills (2.0x), edges=smallest (0.35x)
+                factor = progressive_max_factor - (progressive_max_factor - progressive_min_factor) * (dist ** progressive_curve_power)
                 factor = max(progressive_min_factor, min(progressive_max_factor, factor))
                 level_qty = self._round_to_precision(qty_per_level * factor, qty_precision)
                 level_qty = max(level_qty, min_qty)
+                # Ensure notional meets minimum ($5 notional)
+                if level_qty * price < 5.0:
+                    level_qty = self._round_to_precision(5.0 / price, qty_precision)
             else:
                 level_qty = qty_per_level
 
