@@ -2516,23 +2516,35 @@ class MultiGridManager:
                 # (long_pullback in an uptrend, short_rebound in a downtrend), so
                 # we ride the trend instead of fighting it.
                 regime = _candidate_market_regime(coin)
-                if SCALP_MODE_ENABLED and price > 0 and regime == "ranging":
+                _dir = (getattr(decision, "direction", "neutral") or "neutral").lower()
+                if SCALP_MODE_ENABLED and price > 0:
                     hw = SCALP_HALF_WIDTH_PCT / 100.0
                     _dp = max(2, 8 - int(price))
-                    decision.upper = round(price * (1.0 + hw), _dp)
-                    decision.lower = round(price * (1.0 - hw), _dp)
-                    decision.direction = "neutral"
-                    decision.reasoning = (
-                        f"scalp neutral (ranging) ±{SCALP_HALF_WIDTH_PCT:.2f}% @ ${price:.4f} "
-                        f"({decision.num_grids} levels)"
-                    )
-                else:
-                    # Trending/volatile: do NOT place a neutral grid against the
-                    # trend — keep the directional, trend-aligned ladder.
-                    decision.reasoning = (
-                        f"trend-aligned {getattr(decision, 'direction', 'neutral')} "
-                        f"(regime={regime}, style={getattr(coin, 'grid_style', '?')})"
-                    )
+                    if regime == "ranging" or _dir not in ("long", "short"):
+                        # RANGING → symmetric tight neutral scalp band.
+                        decision.upper = round(price * (1.0 + hw), _dp)
+                        decision.lower = round(price * (1.0 - hw), _dp)
+                        decision.direction = "neutral"
+                        decision.reasoning = (
+                            f"scalp neutral (ranging) ±{SCALP_HALF_WIDTH_PCT:.2f}% @ ${price:.4f}"
+                        )
+                    elif _dir == "long":
+                        # UPTREND → tight band skewed BELOW price: a dense buy
+                        # ladder just under price (fills on small dips → rides up)
+                        # + a thin take-profit zone just above. Near price so it
+                        # fills fast (maker), trend-aligned so it doesn't short
+                        # into the rally.
+                        decision.lower = round(price * (1.0 - 1.6 * hw), _dp)
+                        decision.upper = round(price * (1.0 + 0.4 * hw), _dp)
+                        decision.reasoning = (
+                            f"trend long: buy-dip band @ ${price:.4f} (regime={regime})"
+                        )
+                    else:  # short → DOWNTREND: skew ABOVE price (sell-rip ladder)
+                        decision.lower = round(price * (1.0 - 0.4 * hw), _dp)
+                        decision.upper = round(price * (1.0 + 1.6 * hw), _dp)
+                        decision.reasoning = (
+                            f"trend short: sell-rip band @ ${price:.4f} (regime={regime})"
+                        )
                 direction_label = getattr(decision, "direction", "neutral") or "neutral"
                 decision.reasoning = (
                     f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
