@@ -6,7 +6,7 @@
     "BTC/USDT:USDT": {
       "_comment": "Bitcoin \u2014 deep liquidity, tight spreads, ideal grid candidate",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -19,13 +19,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "ETH/USDT:USDT": {
       "_comment": "Ethereum \u2014 deep liquidity, good mean-reversion",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -38,13 +38,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "SOL/USDT:USDT": {
       "_comment": "Solana \u2014 good volatility, liquid, great grid coin",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -57,13 +57,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "PEPE/USDT:USDT": {
       "_comment": "Meme coin \u2014 high leverage, small orders, aggressive targets, fast timeout",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -76,13 +76,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "DOGE/USDT:USDT": {
       "_comment": "OG meme \u2014 neutral, small exposure",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -95,13 +95,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "1000PEPE/USDT:USDT": {
       "_comment": "Same as PEPE \u2014 different listing format",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -114,13 +114,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "XRP/USDT:USDT": {
       "_comment": "XRP \u2014 liquid, good mean-reversion",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -133,13 +133,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "ADA/USDT:USDT": {
       "_comment": "Cardano \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -152,13 +152,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "AVAX/USDT:USDT": {
       "_comment": "Avalanche \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -171,13 +171,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "LINK/USDT:USDT": {
       "_comment": "Chainlink \u2014 DeFi oracle, liquid",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -190,13 +190,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "AAVE/USDT:USDT": {
       "_comment": "DeFi blue chip",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -209,13 +209,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "TAO/USDT:USDT": {
       "_comment": "AI narrative \u2014 higher risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -228,13 +228,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "HYPE/USDT:USDT": {
       "_comment": "Volatile new listing",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -247,13 +247,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "ZEC/USDT:USDT": {
       "_comment": "Privacy coin",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -266,13 +266,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "SUI/USDT:USDT": {
       "_comment": "New L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -285,13 +285,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "NEAR/USDT:USDT": {
       "_comment": "Sharded L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -304,13 +304,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "APT/USDT:USDT": {
       "_comment": "Aptos L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -323,13 +323,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "ARB/USDT:USDT": {
       "_comment": "Arbitrum L2 \u2014 medium, long bias",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -342,13 +342,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "OP/USDT:USDT": {
       "_comment": "Optimism L2 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -361,13 +361,13 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     },
     "FIL/USDT:USDT": {
       "_comment": "Decentralized storage \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl": [
@@ -380,7 +380,7 @@
       "max_position_usdt": 10.0,
       "margin_type": "cross",
       "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
+      "max_leverage": 20,
       "progressive_sizing_enabled": false
     }
   },
@@ -435,11 +435,11 @@
     "reserve_pct": 20,
     "emergency_liquidation_buffer_pct": 10,
     "max_trade_wallet_exposure_pct": 8.0,
-    "max_leverage": 10,
+    "max_leverage": 20,
     "default_token_profile": {
       "_comment": "Fallback profile for tokens without explicit profiles",
-      "leverage": 10,
-      "max_leverage": 10,
+      "leverage": 20,
+      "max_leverage": 20,
       "num_grids": 6,
       "order_size_usdt": 1.0,
       "target_pnl_pct": [

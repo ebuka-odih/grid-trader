@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    MIN_24H_VOLUME_USDT,
+    MIN_24H_VOLUME_USDT, BASE_ORDER_SIZE_USDT,
     SCAN_TOP_N_COINS,
     MAX_24H_RANGE_PCT,
     MIN_24H_RANGE_PCT,
@@ -443,6 +443,11 @@ class CoinScanner:
             return False, f"ATR too high ({score.atr_pct:.1f}% > {MAX_ATR_PCT}%)"
         if score.mean_reversion_score < MIN_MEAN_REVERSION:
             return False, f"not mean-reverting enough (mr={score.mean_reversion_score:.2f} < {MIN_MEAN_REVERSION})"
+        # Skip coins where order size would be below Bybit minimum
+        notional_per_level = BASE_ORDER_SIZE_USDT * score.suggested_leverage
+        est_qty = notional_per_level / max(score.price, 0.0001)
+        if est_qty * score.price < 5.0:
+            return False, f"order too small (qty={est_qty:.6f} {score.symbol.split('/')[0]})"
         return True, "passed"
 
     async def _process_one_coin(self, ticker: dict) -> CoinScore | None:

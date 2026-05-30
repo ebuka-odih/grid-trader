@@ -17,14 +17,34 @@ from typing import Callable, Optional
 
 import websockets
 
-from config import BYBIT_WS_PUBLIC
+from config import EXCHANGE, TRADING_MODE
+
+# Get WebSocket URL based on exchange
+def _get_ws_url():
+    if EXCHANGE == "binance":
+        if TRADING_MODE == "testnet":
+            return "wss://stream.binancefuture.com/ws"
+        else:
+            return "wss://fstream.binance.com/ws"
+    else:  # bybit
+        if TRADING_MODE == "testnet":
+            return "wss://stream-testnet.bybit.com/v5/public/linear"
+        else:
+            return "wss://stream.bybit.com/v5/public/linear"
+
+BYBIT_WS_PUBLIC = _get_ws_url()
 
 logger = logging.getLogger("price_bus")
 
 
 def symbol_to_ws_symbol(symbol: str) -> str:
-    """Convert ccxt/bybit unified symbol to Bybit v5 topic symbol."""
-    return symbol.replace("/", "").replace(":USDT", "")
+    """Convert ccxt unified symbol to WebSocket topic symbol."""
+    if EXCHANGE == "binance":
+        # Binance uses lowercase without slashes: BTCUSDT
+        return symbol.replace("/", "").replace(":USDT", "").lower()
+    else:
+        # Bybit v5 topic symbol
+        return symbol.replace("/", "").replace(":USDT", "")
 
 
 def ws_symbol_to_symbol(ws_symbol: str) -> str:

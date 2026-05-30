@@ -6,9 +6,9 @@
     "BTC/USDT:USDT": {
       "_comment": "Bitcoin \u2014 deep liquidity, tight spreads, ideal grid candidate",
       "enabled": true,
-      "leverage": 10,
+      "leverage": 35,
       "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         0.3,
         0.8
@@ -18,16 +18,15 @@
       "direction_bias": "long",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "ETH/USDT:USDT": {
       "_comment": "Ethereum \u2014 deep liquidity, good mean-reversion",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 8,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         0.5,
         1.2
@@ -37,16 +36,15 @@
       "direction_bias": "long",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "SOL/USDT:USDT": {
       "_comment": "Solana \u2014 good volatility, liquid, great grid coin",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 5.0,
       "target_pnl": [
         0.8,
         2.0
@@ -56,16 +54,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "PEPE/USDT:USDT": {
       "_comment": "Meme coin \u2014 high leverage, small orders, aggressive targets, fast timeout",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         1.5,
         4.0
@@ -75,16 +72,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "DOGE/USDT:USDT": {
       "_comment": "OG meme \u2014 neutral, small exposure",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         1.0,
         3.0
@@ -94,16 +90,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "1000PEPE/USDT:USDT": {
       "_comment": "Same as PEPE \u2014 different listing format",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 12,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         1.5,
         4.0
@@ -113,16 +108,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "XRP/USDT:USDT": {
       "_comment": "XRP \u2014 liquid, good mean-reversion",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 5.0,
       "target_pnl": [
         0.8,
         1.5
@@ -132,16 +126,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "ADA/USDT:USDT": {
       "_comment": "Cardano \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.8,
         1.5
@@ -151,16 +144,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "AVAX/USDT:USDT": {
       "_comment": "Avalanche \u2014 liquid mid-cap",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 9,
+      "order_size_usdt": 5.0,
       "target_pnl": [
         0.7,
         1.5
@@ -170,16 +162,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "LINK/USDT:USDT": {
       "_comment": "Chainlink \u2014 DeFi oracle, liquid",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 8,
+      "order_size_usdt": 5.0,
       "target_pnl": [
         0.6,
         1.2
@@ -189,16 +180,15 @@
       "direction_bias": "long",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "AAVE/USDT:USDT": {
       "_comment": "DeFi blue chip",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         0.6,
         1.2
@@ -208,16 +198,15 @@
       "direction_bias": "long",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "TAO/USDT:USDT": {
       "_comment": "AI narrative \u2014 higher risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         1.0,
         2.5
@@ -227,16 +216,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "HYPE/USDT:USDT": {
       "_comment": "Volatile new listing",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         1.2,
         3.0
@@ -246,16 +234,15 @@
       "direction_bias": "short",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "ZEC/USDT:USDT": {
       "_comment": "Privacy coin",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 3.0,
       "target_pnl": [
         0.8,
         2.0
@@ -265,16 +252,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "SUI/USDT:USDT": {
       "_comment": "New L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.7,
         1.5
@@ -284,16 +270,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "NEAR/USDT:USDT": {
       "_comment": "Sharded L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.7,
         1.5
@@ -303,16 +288,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "APT/USDT:USDT": {
       "_comment": "Aptos L1 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 10,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.8,
         1.8
@@ -322,16 +306,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "ARB/USDT:USDT": {
       "_comment": "Arbitrum L2 \u2014 medium, long bias",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.7,
         1.5
@@ -341,16 +324,15 @@
       "direction_bias": "long",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "OP/USDT:USDT": {
       "_comment": "Optimism L2 \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 9,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.7,
         1.5
@@ -360,16 +342,15 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     },
     "FIL/USDT:USDT": {
       "_comment": "Decentralized storage \u2014 medium risk, neutral",
       "enabled": true,
-      "leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "num_grids": 8,
+      "order_size_usdt": 4.0,
       "target_pnl": [
         0.6,
         1.2
@@ -379,9 +360,8 @@
       "direction_bias": "neutral",
       "max_position_usdt": 10.0,
       "margin_type": "cross",
-      "max_wallet_exposure_pct": 8.0,
-      "max_leverage": 10,
-      "progressive_sizing_enabled": false
+      "max_wallet_exposure_pct": 25.0,
+      "max_leverage": 50
     }
   },
   "portfolio": {
@@ -434,20 +414,20 @@
     ],
     "reserve_pct": 20,
     "emergency_liquidation_buffer_pct": 10,
-    "max_trade_wallet_exposure_pct": 8.0,
-    "max_leverage": 10,
+    "max_trade_wallet_exposure_pct": 80.0,
+    "max_leverage": 100,
     "default_token_profile": {
       "_comment": "Fallback profile for tokens without explicit profiles",
-      "leverage": 10,
-      "max_leverage": 10,
-      "num_grids": 6,
-      "order_size_usdt": 1.0,
+      "leverage": 35,
+      "max_leverage": 50,
+      "num_grids": 10,
+      "order_size_usdt": 3.0,
       "target_pnl_pct": [
         2.0,
         4.0
       ],
-      "max_wallet_exposure_pct": 8.0,
-      "progressive_sizing_enabled": false,
+      "max_wallet_exposure_pct": 25.0,
+      "progressive_sizing_enabled": true,
       "progressive_min_factor": 0.35,
       "progressive_max_factor": 2.0,
       "progressive_curve_power": 1.5

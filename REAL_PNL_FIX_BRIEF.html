@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grid Trader — Real-PnL Fix &amp; Codebase Hardening (Implementation Brief)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --text:#e6edf3; --muted:#9aa7b4; --accent:#58a6ff; --green:#3fb950;
+    --red:#f85149; --amber:#d29922; --purple:#bc8cff; --code:#0b0f14;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 96px}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.4px}
+  h2{font-size:22px;margin:44px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h3{font-size:17px;margin:26px 0 8px;color:var(--accent)}
+  h4{font-size:15px;margin:18px 0 6px;color:var(--purple)}
+  p{margin:10px 0}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px;
+    background:#243041;padding:1px 6px;border-radius:5px;color:#d6e3f0}
+  pre{background:var(--code);border:1px solid var(--border);border-radius:8px;
+    padding:14px 16px;overflow:auto;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    font-size:12.5px;line-height:1.55}
+  pre .c{color:#7d8590}            /* comment */
+  pre .del{color:#f85149}          /* removed */
+  pre .add{color:#3fb950}          /* added */
+  pre .k{color:#ff7b72}            /* keyword */
+  pre .s{color:#a5d6ff}            /* string */
+  .lead{color:var(--muted);font-size:16px;margin-top:0}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:18px 20px;margin:16px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.4px;
+    padding:2px 9px;border-radius:999px;text-transform:uppercase;vertical-align:middle}
+  .b-crit{background:rgba(248,81,73,.15);color:#ff8983;border:1px solid #f8514955}
+  .b-high{background:rgba(210,153,34,.15);color:#e3b341;border:1px solid #d2992255}
+  .b-med{background:rgba(88,166,255,.15);color:#79c0ff;border:1px solid #58a6ff55}
+  .b-p1{background:rgba(63,185,80,.15);color:#56d364;border:1px solid #3fb95055}
+  .b-p2{background:rgba(188,140,255,.15);color:#d2a8ff;border:1px solid #bc8cff55}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd9e5}
+  tr:nth-child(even) td{background:#11161d}
+  .file{color:var(--amber);font-weight:600}
+  ul,ol{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .kpi{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}
+  .kpi div{flex:1;min-width:150px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:8px;padding:12px 14px}
+  .kpi b{display:block;font-size:22px;margin-bottom:2px}
+  .kpi span{color:var(--muted);font-size:12px}
+  .warn{border-left:4px solid var(--red);background:rgba(248,81,73,.07)}
+  .ok{border-left:4px solid var(--green);background:rgba(63,185,80,.07)}
+  .info{border-left:4px solid var(--accent);background:rgba(88,166,255,.07)}
+  .tag{color:var(--muted);font-size:12.5px}
+  hr{border:0;border-top:1px solid var(--border);margin:30px 0}
+  a{color:var(--accent)}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+  .step{counter-increment:step;}
+  ol.checks{list-style:none;padding-left:0}
+  ol.checks li{padding-left:30px;position:relative}
+  ol.checks li:before{content:"☐";position:absolute;left:4px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Grid Trader — Real-PnL Fix &amp; Codebase Hardening</h1>
+<p class="lead">Implementation brief for a follow-up engineering session. Goal: make the
+<b>live mainnet</b> bot account for <b>real</b> Bybit PnL (fees included) instead of the current
+gross, fee-free, paper accounting — then fix the major structural issues — <b>before</b> rebuilding the Docker container.</p>
+
+<div class="panel info">
+<b>This document is self-contained.</b> The implementing session may have <u>no prior context</u>.
+Everything needed — host, paths, root-cause analysis, exact <code>file:line</code> targets, before/after code,
+DB migrations, validation, and rollback — is below. Read “Environment” and “Safety” first.
+</div>
+
+<h2>0 · Environment &amp; how to run</h2>
+<table>
+<tr><th>Item</th><th>Value</th></tr>
+<tr><td>Host (SSH)</td><td class="mono">forge1@49.13.16.174</td></tr>
+<tr><td>Project dir</td><td class="mono">~/.hermes/projects/grid-trader/</td></tr>
+<tr><td>Python</td><td class="mono">./venv/bin/python3</td> (no system <code>sqlite3</code> CLI — query via Python)</tr>
+<tr><td>Running processes</td><td class="mono">multi_grid_manager.py</code> (engine) + <code>grid_api.py</code> (dashboard/API)</td></tr>
+<tr><td>Exchange</td><td>Bybit USDT linear perps, <b>mainnet</b>, <code>DRY_RUN=false</code>. CCXT async + a private WebSocket execution stream.</td></tr>
+<tr><td>Config</td><td><span class="file">.env</span> + <span class="file">config.py</span> + <span class="file">runtime_config.py</span> (a JSON overlay can override env — check <code>/data/runtime_config.json</code>).</td></tr>
+<tr><td>Trade DB</td><td><span class="file">multi_grid_trades.db</span> (SQLAlchemy via <span class="file">improvement_loop.py</span>; tables <code>trades</code>, <code>grid_cycles</code>).</td></tr>
+<tr><td>Live key</td><td>Bybit key in <span class="file">.env</span> is live and <b>IP-whitelisted</b> (per owner). Read-only calls (<code>fetch_balance</code>/<code>fetch_positions</code>/<code>fetch_open_orders</code>) are safe for validation.</td></tr>
+<tr><td>Restart</td><td>Process is supervised (<span class="file">supervisor.sh</span> / systemd user unit <code>grid-trader.service</code>) and will be re-deployed via Docker. Don’t hot-edit while live without the owner; land changes for the container rebuild.</td></tr>
+</table>
+
+<h2>1 · The problem, in one paragraph</h2>
+<div class="panel warn">
+The bot places <b>real</b> orders on Bybit, but it computes PnL itself as the <b>gross grid spread with
+zero trading fees</b>, then <b>accumulates</b> that fee-free number into an in-memory wallet. So its
+internal books drift far above reality. Bybit’s execution WebSocket already delivers the
+<b>authoritative</b> realized PnL (<code>closedPnl</code>) and fee (<code>execFee</code>) per fill — the code
+receives them and <b>throws them away</b>. On top of that, the per-fill DB writer reads <code>dict</code>
+fills with <code>getattr()</code>, so every live trade row is logged as <code>unknown / 0 / 0 / 0 / sim_0</code>.
+Net effect: the dashboard/DB showed <b>+$359 “profit”</b> over one period while the <b>real account went
+$100 → $93 (−7%)</b>.
+</div>
+
+<div class="kpi">
+  <div><b>$93.08</b><span>Real Bybit equity (queried read-only). Started at $100.</span></div>
+  <div><b>+$359</b><span>Simulated wallet peak the bot reported (fictional).</span></div>
+  <div><b>$0.00 fees</b><span>Fees subtracted anywhere in PnL math. None.</span></div>
+  <div><b>unknown/0/0</b><span>Every live row in the <code>trades</code> table.</span></div>
+  <div><b>61% exposed</b><span>Live total exposure now — over the 40% cap. ~20-25% margin per trade.</span></div>
+</div>
+
+<h3>Evidence (reproduce before changing anything)</h3>
+<pre><span class="c"># 1) Real account vs the bot's books — run from project dir</span>
+cat /tmp/check_balance.py | ./venv/bin/python3 -c "from dotenv import load_dotenv;load_dotenv();import sys;exec(sys.stdin.read())"
+<span class="c"># → totalEquity ≈ 93.08, no open positions, ~9 resting limit orders</span>
+
+<span class="c"># 2) trades table is garbage in live mode</span>
+./venv/bin/python3 -c "import sqlite3;[print(r) for r in sqlite3.connect('multi_grid_trades.db').execute('select side,price,qty,realized_pnl,order_id from trades limit 5')]"
+<span class="c"># → ('unknown',0.0,0.0,0.0,'sim_0') ...</span>
+
+<span class="c"># 3) historical 'profit' was unrealized/paper</span>
+<span class="c"># multi_grid_trades.db.old: SUM(total_pnl)=+359 but realized=-24, wallet_balance_at_close grew 100→459</span></pre>
+
+<h2>2 · How a live fill actually flows (current code)</h2>
+<div class="panel">
+<ol>
+<li><b>Place order</b> — <span class="file">multi_grid_manager.py:2682-2693</span>: <code>create_limit_order(...)</code> →
+<code>level.order_id = order["id"]</code> (Bybit <code>orderId</code>).</li>
+<li><b>Execution WS</b> — <span class="file">multi_grid_manager.py:1358</span> starts a private WS;
+<code>_handle_execution()</code> (<span class="file">:1531-1571</span>) parses <code>exec_data</code> which
+<b>contains <code>closedPnl</code> and <code>execFee</code></b>, then calls
+<code>engine.notify_fill(order_id, side, qty, price)</code> — <span class="b-crit badge">drops closedPnl + execFee</span></li>
+<li><b>Queue</b> — <span class="file">live_engine.py:755</span> <code>notify_fill()</code> pushes a dict
+<code>{order_id, side, qty, price}</code> into <code>_fill_queue</code>.</li>
+<li><b>Process</b> — <span class="file">live_engine.py:457</span> <code>_process_fill_queue()</code> matches the
+level by <code>order_id</code> (<span class="file">:521</span>), calls <code>grid_core.process_fill()</code>,
+appends a <b>dict</b> <code>fill_record</code> to <code>state.fills</code>.</li>
+<li><b>PnL math</b> — <span class="file">grid_core.py:981-1043</span> <code>process_fill()</code> sets
+<code>pnl = (fill.price − entry)·qty</code> — <span class="b-crit badge">no fee, gross only</span>.
+Accumulates into <code>position.realized_pnl</code>.</li>
+<li><b>Journal per-fill</b> — <span class="file">multi_grid_manager.py:2835-2842</span> records each new fill with
+<code>getattr(fill,'side','unknown')</code> etc. on a <b>dict</b> → <span class="b-crit badge">all defaults</span>.</li>
+<li><b>Cycle close</b> — <span class="file">multi_grid_manager.py:1619-1647</span> reads engine
+<code>get_status()</code> (<code>total_pnl = realized + unrealized</code>, still fee-free) and
+<code>wallet_tracker</code> <b>adds</b> it to balance (<span class="file">wallet_tracker.py:233 add_realized_pnl</span>,
+<span class="file">:97 restore_realized_pnl</span>).</li>
+<li><b>Position sync</b> — <span class="file">live_engine.py:526</span> every ~10 s overwrites
+<code>qty/side/entry_price</code> from the exchange but <b>not</b> <code>realized_pnl</code> → two sources of truth.</li>
+</ol>
+</div>
+
+<hr>
+
+<h2>PHASE 1 <span class="b-p1 badge">Highest impact</span> — Make recorded PnL == real Bybit PnL</h2>
+<p>Three coordinated edits + a DB migration. After this, the DB/dashboard numbers equal the real account
+within funding/rounding, and you can finally trust every later experiment.</p>
+
+<h3>1.1 <span class="b-crit badge">Critical</span> Capture Bybit’s authoritative <code>closedPnl</code> + <code>execFee</code></h3>
+
+<h4>(a) Forward the fields from the execution handler</h4>
+<p><span class="file">multi_grid_manager.py</span> — in <code>_handle_execution()</code> (~line 1545-1562). Bybit V5
+<code>execution</code> topic fields: <code>execQty, execPrice, execFee, execType, closedPnl, side, orderId</code>.</p>
+<pre><span class="c"># current (~1545)</span>
+        side  = exec_data.get(<span class="s">"side"</span>, <span class="s">""</span>)
+        qty   = float(exec_data.get(<span class="s">"execQty"</span>, 0) or 0)
+        price = float(exec_data.get(<span class="s">"execPrice"</span>, 0) or 0)
+        exec_type = exec_data.get(<span class="s">"execType"</span>, <span class="s">""</span>)
+<span class="add">+       fee        = float(exec_data.get("execFee", 0) or 0)        # settle-coin fee for THIS execution</span>
+<span class="add">+       closed_pnl = float(exec_data.get("closedPnl", 0) or 0)     # realized PnL booked by THIS execution</span>
+        ...
+        <span class="k">if</span> engine <span class="k">and</span> hasattr(engine, <span class="s">"notify_fill"</span>):
+<span class="del">-           engine.notify_fill(order_id, side, qty, price)</span>
+<span class="add">+           engine.notify_fill(order_id, side, qty, price, fee=fee, closed_pnl=closed_pnl)</span></pre>
+
+<h4>(b) Carry them through the queue</h4>
+<p><span class="file">live_engine.py:755</span> <code>notify_fill()</code>:</p>
+<pre><span class="del">-   def notify_fill(self, order_id, side, qty, price):</span>
+<span class="add">+   def notify_fill(self, order_id, side, qty, price, fee=0.0, closed_pnl=0.0):</span>
+        self._fill_queue.put_nowait({
+            <span class="s">"order_id"</span>: order_id, <span class="s">"side"</span>: side,
+            <span class="s">"qty"</span>: qty, <span class="s">"price"</span>: price,
+<span class="add">+           "fee": fee, "closed_pnl": closed_pnl,</span>
+        })</pre>
+
+<h4>(c) Use exchange truth in the fill processor</h4>
+<p><span class="file">live_engine.py:457-505</span> <code>_process_fill_queue()</code>. Read the new fields and prefer
+Bybit’s <code>closed_pnl</code> over the locally computed spread; always subtract <code>fee</code>.</p>
+<pre>                fee        = float(fill_data.get(<span class="s">"fee"</span>, 0) or 0)
+                closed_pnl = float(fill_data.get(<span class="s">"closed_pnl"</span>, 0) or 0)
+                ...
+                local_pnl = process_fill(fill_event, self.state.position, self.state.imbalance)
+<span class="add">+               # Authoritative realized PnL from the venue, net of this fill's fee.</span>
+<span class="add">+               # closed_pnl is non-zero only on reducing fills; opening fills still pay a fee.</span>
+<span class="add">+               realized_delta = (closed_pnl if closed_pnl != 0 else local_pnl) - fee</span>
+<span class="add">+               self.state.position.realized_pnl += realized_delta - local_pnl  # reconcile process_fill's add</span>
+<span class="add">+               self.state.position.fees_paid = getattr(self.state.position, "fees_paid", 0.0) + fee</span>
+                fill_record = {
+                    <span class="s">"side"</span>: side, <span class="s">"price"</span>: price, <span class="s">"qty"</span>: qty,
+                    <span class="s">"timestamp"</span>: time.time(), <span class="s">"order_id"</span>: order_id,
+<span class="del">-                   "pnl": pnl,</span>
+<span class="add">+                   "pnl": realized_delta, "fee": fee, "closed_pnl": closed_pnl,</span>
+                }</pre>
+<div class="panel info"><b>Design note.</b> <code>process_fill()</code> already mutates <code>position.realized_pnl</code> by
+<code>local_pnl</code>. Rather than rewrite it, the snippet above adjusts the accumulator so the net effect equals
+<code>closed_pnl − fee</code>. Cleaner alternative (preferred if you have time): make
+<code>grid_core.process_fill()</code> accept optional <code>fee</code> and <code>exchange_pnl</code> args and do the
+reconciliation in one place. Keep dry-run behavior unchanged (no fee args → identical to today).</p></div>
+
+<h4>(d) Add a fee field to the position</h4>
+<p><span class="file">grid_core.py:25-58</span> <code>GridPosition</code>:</p>
+<pre>    realized_pnl: float = 0.0
+<span class="add">+   fees_paid: float = 0.0   # cumulative execFee for this cycle (settle coin)</span></pre>
+<p>And in <code>reset_position()</code> (<span class="file">grid_core.py:1128</span>) reset <code>fees_paid = 0.0</code>.</p>
+
+<h3>1.2 <span class="b-crit badge">Critical</span> Fix the per-fill DB writer (dict, not getattr)</h3>
+<p><span class="file">multi_grid_manager.py:2835-2842</span>. Live fills are <b>dicts</b>; dry-run fills are
+<code>FillEvent</code> <b>objects</b> with <code>.sim_pnl</code>. Handle both.</p>
+<pre>                        <span class="k">for</span> fill <span class="k">in</span> slot.state.fills[fills_before:]:
+                            <span class="k">try</span>:
+<span class="add">+                               if isinstance(fill, dict):           # LIVE path</span>
+<span class="add">+                                   f_side  = fill.get("side", "unknown")</span>
+<span class="add">+                                   f_price = fill.get("price", 0.0)</span>
+<span class="add">+                                   f_qty   = fill.get("qty", 0.0)</span>
+<span class="add">+                                   f_pnl   = fill.get("pnl", 0.0)        # already net of fee (1.1c)</span>
+<span class="add">+                                   f_fee   = fill.get("fee", 0.0)</span>
+<span class="add">+                                   f_oid   = fill.get("order_id", "") or "live"</span>
+<span class="add">+                               else:                                # DRY-RUN path (FillEvent)</span>
+<span class="add">+                                   f_side  = getattr(fill, "side", "unknown")</span>
+<span class="add">+                                   f_price = getattr(fill, "price", 0.0)</span>
+<span class="add">+                                   f_qty   = getattr(fill, "qty", 0.0)</span>
+<span class="add">+                                   f_pnl   = getattr(fill, "sim_pnl", getattr(fill, "pnl_from_fill", 0.0))</span>
+<span class="add">+                                   f_fee   = 0.0</span>
+<span class="add">+                                   f_oid   = f"sim_{getattr(fill,'level_index',0)}"</span>
+                                self.journal.record_fill(
+                                    grid_id=slot.state.grid.grid_id,
+                                    symbol=slot.symbol,
+<span class="del">-                                   side=getattr(fill, 'side', 'unknown'),</span>
+<span class="del">-                                   price=getattr(fill, 'price', 0),</span>
+<span class="del">-                                   qty=getattr(fill, 'qty', 0),</span>
+<span class="del">-                                   realized_pnl=getattr(fill, 'sim_pnl', 0),</span>
+<span class="del">-                                   order_id=f"sim_{getattr(fill, 'level_index', 0)}",</span>
+<span class="add">+                                   side=f_side, price=f_price, qty=f_qty,</span>
+<span class="add">+                                   realized_pnl=f_pnl, fee=f_fee, order_id=f_oid,</span>
+                                )</pre>
+
+<h4>DB migration — add a <code>fee</code> column</h4>
+<p><span class="file">improvement_loop.py:177</span> <code>record_fill()</code> needs a <code>fee</code> param, and the
+SQLAlchemy <code>TradeRecord</code> model needs a <code>fee</code> column. Add the column to the model and run an
+idempotent migration at startup (the file already does similar “refreshed_columns” checks):</p>
+<pre>ALTER TABLE trades ADD COLUMN fee FLOAT DEFAULT 0.0;     <span class="c">-- if not exists</span></pre>
+<p>Optionally add <code>fees_total FLOAT</code> to <code>grid_cycles</code> and persist <code>position.fees_paid</code>
+in <code>record_cycle_close()</code> so per-cycle fee drag is queryable.</p>
+
+<h3>1.3 <span class="b-high badge">High</span> Reconcile the wallet to real equity (stop accumulating)</h3>
+<p><span class="file">wallet_tracker.py</span> already has <code>set_live_balance(equity)</code> (<span class="file">:56-85</span>)
+— it’s just not called on the hot path; the per-cycle path uses <code>add_realized_pnl()</code>
+(<span class="file">:233</span>) which is what lets the book drift. Make real equity the source of truth.</p>
+<ul>
+<li>In the portfolio-status loop and at <b>every cycle close</b> (<span class="file">multi_grid_manager.py</span>
+around the status print ~1700-1760 and the close path ~1619), call
+<code>fetch_balance({"type":"swap"})</code>, read <code>info.result.list[].totalEquity</code>, and call
+<code>wallet_tracker.set_live_balance(equity)</code>.</li>
+<li>Keep <code>add_realized_pnl()</code> only as a <b>fallback</b> when the balance fetch fails (network), and log a
+<span class="mono">WARN</span> when falling back.</li>
+<li>Throttle the fetch (e.g. once per status tick / ≥10 s) to respect rate limits.</li>
+</ul>
+<pre><span class="c"># helper to add near startup balance fetch (manager ~1275)</span>
+<span class="k">async def</span> _live_equity(self) -&gt; float | None:
+    <span class="k">try</span>:
+        bal = <span class="k">await</span> self.grid_calc.exchange.fetch_balance({<span class="s">"type"</span>:<span class="s">"swap"</span>})
+        <span class="k">for</span> a <span class="k">in</span> bal.get(<span class="s">"info"</span>,{}).get(<span class="s">"result"</span>,{}).get(<span class="s">"list"</span>,[]):
+            <span class="k">if</span> a.get(<span class="s">"totalEquity"</span>): <span class="k">return</span> float(a[<span class="s">"totalEquity"</span>])
+    <span class="k">except</span> Exception <span class="k">as</span> e:
+        logger.warning(<span class="s">f"live equity fetch failed: {e}"</span>)
+    <span class="k">return</span> None</pre>
+
+<h3>1.4 Reconciliation logging (proof it worked)</h3>
+<p>On each cycle close, log both numbers so divergence is visible immediately:</p>
+<pre>logger.info(<span class="s">f"💵 RECONCILE | cycle_pnl=${total_pnl:+.4f} fees=${fees:.4f} "</span>
+            <span class="s">f"| book=${book_balance:.2f} live=${live_equity:.2f} "</span>
+            <span class="s">f"| drift=${book_balance-live_equity:+.3f}"</span>)</pre>
+<p><b>Acceptance:</b> after a few cycles, <code>drift</code> stays within ~$0.05 (funding/rounding). If it grows, a fill
+path is still bypassing fees/closedPnl.</p>
+
+<h3>Phase 1 validation checklist</h3>
+<ol class="checks">
+<li>Read-only <code>check_balance.py</code> before &amp; after — equity reconciles to the book.</li>
+<li><code>trades</code> rows now show real side/price/qty, non-zero <code>fee</code>, real <code>order_id</code> (no more <code>unknown/sim_0</code>).</li>
+<li><code>SUM(realized_pnl)</code> over a session ≈ (live equity now − live equity at session start).</li>
+<li>A deliberately small losing round-trip shows a <b>net-negative</b> PnL (fees make tiny “wins” into losses — that’s correct and the whole point).</li>
+<li>Dry-run mode (<code>DRY_RUN=true</code>) still runs unchanged (FillEvent branch).</li>
+</ol>
+
+<hr>
+
+<h2>PHASE 2 <span class="b-p2 badge">Major issues</span> — before the Docker rebuild</h2>
+<p>Order by impact. Each is independent; land them as separate commits so they’re revertible.</p>
+
+<h3>2.1 <span class="b-high badge">High</span> Single source of truth for position</h3>
+<p><span class="file">live_engine.py:526</span> <code>_sync_position_from_exchange()</code> overwrites
+<code>qty/side/entry_price</code> from the exchange but <b>not</b> <code>realized_pnl</code>, while
+<code>process_fill()</code> maintains its own averaged <code>entry_price</code>. After Phase 1, realized PnL comes
+from <code>closedPnl</code>, so: let <b>exchange</b> own <code>qty/side/entry_price</code> (for correct unrealized PnL
+and close decisions) and let <b>execution stream</b> own <code>realized_pnl/fees_paid</code>. Document this
+ownership in a comment and remove the averaging path’s authority over entry where they conflict.</p>
+
+<h3>2.2 <span class="b-crit badge">Critical bug</span> Broken grid range / “shift” math</h3>
+<p>Live log emits nonsense: <code>🤖 Agent: shift_down | Price at -10701% of range, shifting down 1075.1%</code>.
+A grid whose range collapses (upper≈lower, or stale bounds) produces absurd “position-in-range” percentages and
+triggers spurious shifts. Find the producer (grep for the log string / “% of range” / <code>shift_down</code> /
+<code>shift_up</code> in <span class="file">multi_grid_manager.py</span> and <span class="file">adaptive_grid.py</span>),
+clamp range-position to <code>[0,1]</code>, and guard against <code>(upper-lower) ≤ min_tick</code>. Add a unit test.</p>
+
+<h3>2.3 <span class="b-high badge">High</span> Grids don’t fill (~69% close as <code>no_fills_timeout</code>)</h3>
+<p>Today: 50/72 cycles filled <b>zero</b> orders. Causes to investigate &amp; fix:</p>
+<ul>
+<li>Grid too wide vs. realized volatility → price never reaches levels. Width should be derived from short-horizon ATR, not a fixed <code>MAX_GRID_WIDTH_PCT=20</code> ceiling.</li>
+<li><code>MIN_MEAN_REVERSION=0.40</code> / <code>MIN_ENTRY_QUALITY=0.10</code> gates may admit trending coins where a symmetric grid bleeds.</li>
+<li><code>NO_FILL_GRID_TIMEOUT_SECONDS=900</code> (15 m) frees the slot before a reasonable grid works — but only worth lengthening once width is right.</li>
+</ul>
+
+<h3>2.4 <span class="b-high badge">High</span> Enforce a fee-aware spacing floor</h3>
+<p>After Phase 1, fees are visible — now make them a <b>gate</b>. A grid is only +EV if per-level spacing pays for the
+round-trip: require <code>level_spacing_pct ≥ k × (2 × maker_fee)</code> with <code>k≈3</code> (Bybit maker 0.02% →
+require ≳0.12%). Reject/await any candidate grid whose spacing is below the floor in
+<span class="file">grid_engine.py calculate_grid_levels</span> or the deploy gate in
+<span class="file">multi_grid_manager.py</span>. This is the real “make each fill profitable” lever — not the
+center-vs-edge sizing debate in <span class="file">MARTINGALE_IMPLEMENTATION_PLAN.md</span>.</p>
+
+<h3>2.5 <span class="b-crit badge">Critical</span> Per-trade order size, exposure caps &amp; leverage</h3>
+<p>Owner flagged this directly: <b>each trade reserves ~20%+ of the wallet in margin</b>. Confirmed — and worse:
+live <b>total</b> exposure is currently <b>61.2%</b>, over the configured 40% ceiling, so the caps are <b>not being
+enforced at runtime</b>. This is both a risk problem (one trend wipes a big slice of the account) and a profitability
+problem (the large notional makes fees material against a thin per-cycle target — directly compounds Phase 1).</p>
+
+<h4>How “20%+ per trade” happens (the math)</h4>
+<pre><span class="c"># grid_core.py:1149</span>
+allocated_margin = order_size_usdt × num_grids
+target_pnl       = allocated_margin × target_pct/100      <span class="c"># 2–3%</span>
+drawdown_limit   = allocated_margin × max_dd_pct/100</pre>
+<table>
+<tr><th>Step</th><th>Value (wallet ≈ $93, 35×)</th><th>Source</th></tr>
+<tr><td>Per-trade margin cap</td><td><b>25% → ~$23 margin</b> per grid</td><td><code>MAX_TRADE_WALLET_EXPOSURE_PCT=25</code> (.env)</td></tr>
+<tr><td>Notional controlled</td><td>$23 × 35 ≈ <b>$805</b> per grid</td><td>leverage</td></tr>
+<tr><td>Move to full margin loss</td><td>1 / 35 ≈ <b>2.86%</b> adverse → −$23 = <b>−25% of account on one trade</b></td><td>leverage math</td></tr>
+<tr><td>Per-cycle target</td><td>$23 × 2–3% ≈ <b>$0.46–0.69</b></td><td><code>target_pnl_usdt</code></td></tr>
+<tr><td>Round-trip fee drag</td><td>~$805 turned over twice ≈ $1.6k × 0.02% ≈ <b>$0.32</b> → eats 50–70% of target</td><td>Bybit maker 0.02%</td></tr>
+</table>
+<p>So even a “winning” cycle nets pennies after fees, while a single un-stopped 2.86% move costs a quarter of the
+account. The risk/reward is upside-down — and it’s driven by the order size, not the strategy.</p>
+
+<h4><span class="b-crit badge">Critical bug</span> Exposure caps are not enforced continuously</h4>
+<p>Live exposure 61% &gt; <code>MAX_TOTAL_WALLET_EXPOSURE_PCT=40</code>. Sizing is capped <i>at deploy</i>
+(<span class="file">multi_grid_manager.py:874-884 calculate_volatility_scaled_size</span>), but nothing trims or blocks
+as fills accumulate and grids stack. Add a continuous guard in the risk loop
+(<span class="file">portfolio_risk_monitor.py</span> / the manager’s status tick) that:
+(a) <b>refuses new deploys</b> when live margin ≥ total cap, and
+(b) <b>halts fills / scales out</b> when live margin exceeds the cap. Drive it off the real
+<code>fetch_balance</code> <code>used</code>/<code>totalEquity</code> figures added in Phase 1.3, not the in-memory estimate.</p>
+
+<h4><span class="b-high badge">High</span> Config contradicts itself across 4 sources</h4>
+<table>
+<tr><th>Source</th><th>order_size</th><th>num_grids</th><th>leverage</th><th>per-trade / total exposure</th></tr>
+<tr><td><span class="file">.env</span></td><td>3.0</td><td>8</td><td>35</td><td>25% / 40%</td></tr>
+<tr><td><span class="file">config.py</span> defaults</td><td>0.5</td><td>8</td><td>35</td><td>15% / 25%</td></tr>
+<tr><td><span class="file">token_profiles.json</span> defaults</td><td><b>10.0</b></td><td>10</td><td><b>100</b></td><td><b>2.0%</b> / —</td></tr>
+<tr><td><span class="file">runtime_config.json</span> overlay</td><td colspan="4">can silently override env (see commit <code>19c8c0f</code>) — confirm contents on the box</td></tr>
+</table>
+<p>These are mutually inconsistent, so the <i>effective</i> sizing is ambiguous — exactly how you end up at 61% when
+you believe it’s capped at 25/40. <b>Pick one source of truth</b> (recommend <code>.env</code> → <code>config.py</code>,
+retire the overlay or make it explicit), align <code>token_profiles.json</code> defaults to it, and log the
+<b>effective</b> <code>order_size / num_grids / leverage / margin / %wallet</code> at every deploy so this is auditable.
+Also fix an <b>off-by-one</b>: <code>allocated_margin_usdt</code> uses <code>num_grids</code> while the sizing cap uses
+<code>num_grids + 1</code> — reserved vs sized margin disagree by one level.</p>
+
+<h4>Recommended sizing (small account, real-PnL era)</h4>
+<ul>
+<li><b>Per-trade margin cap → 5%</b> (~$4.6), <b>total exposure ≤ 15–20%</b>, <b>≥3 concurrent grids</b> for
+diversification. This matches the stated intent in <span class="file">MARTINGALE_IMPLEMENTATION_PLAN.md</span> (“5% per
+coin”) and <span class="file">portfolio_risk_monitor.py</span> — the live config just never adopted it.</li>
+<li><b>Leverage 35× → 5–10×</b> while validating real PnL; raise only with evidence.
+<code>token_profiles.json defaults.leverage=100</code> (clamped to 35 by <code>config.clamp_leverage</code>) should be set
+to a sane value, not relied on being clamped.</li>
+<li><b>Do not ship martingale on leverage.</b> <span class="file">MARTINGALE_IMPLEMENTATION_PLAN.md</span> is
+mislabeled — it calls “big at center, small at edges” <i>martingale</i> (that’s the opposite, anti-martingale). Real
+martingale (more size as price moves against you) at 35× and 25% per trade is account-death; <code>drawdown</code>
+closes are already the single largest loss bucket. If size-shaping is wanted, keep it anti-martingale (center-weighted),
+<b>cap total grid notional</b>, and validate in dry-run against the now fee-correct simulator for ≥1 week.</li>
+</ul>
+
+<h3>2.6 <span class="b-med badge">Verify</span> Hard-coded 8% target in live close path</h3>
+<p><span class="file">live_engine.py:254-255</span> calls <code>check_close_conditions(target_pnl_pct_low=8.0,
+target_pnl_pct_high=8.0)</code> regardless of config (which says 2–3%). The comment says it’s an intentional
+ceiling with dynamic TP handling everything below — confirm that’s true and that the dynamic-TP engine is actually
+firing, otherwise positions ride to ±8% of margin.</p>
+
+<h3>2.7 <span class="b-med badge">Hygiene</span> Repo cleanup before container build</h3>
+<ul>
+<li>Dozens of <code>*.bak*</code>, <code>*.backup</code>, <code>*.broken*</code>, <code>*.old</code> files in the
+project root. Move to <code>archive/</code> or delete (they’re in git history). A clean tree reduces the chance the
+Docker image ships a stale module.</li>
+<li>Confirm the <span class="file">Dockerfile</span>/<span class="file">docker-compose.yml</span> copy the
+<u>current</u> files and that <code>/data/runtime_config.json</code> doesn’t silently override the new <code>.env</code>
+(history shows this overlay has masked env values before — commit <code>19c8c0f</code>).</li>
+</ul>
+
+<h3>2.8 <span class="b-med badge">Ops/Sec</span> Secrets</h3>
+<p>Live Bybit key+secret are plaintext in <span class="file">.env</span>. Confirm the key is
+<b>no-withdrawal</b> + IP-allowlisted (owner says IP is whitelisted). Consider Docker secrets / env injection rather
+than a baked file, and rotate if the secret has been shared in logs/sessions.</p>
+
+<hr>
+
+<h2>PHASE 3 <span class="b-p2 badge">Strategy</span> — Anti-martingale (center-weighted) sizing</h2>
+
+<div class="panel info">
+<b>Recommendation (data-driven):</b> implement <b>anti-martingale / center-weighted</b> sizing — larger orders near
+the center, smaller at the edges. <b>Do not implement true martingale</b> (averaging down into adverse moves).
+<b>Execution order:</b> this phase runs <u>after</u> Phase 1 (you cannot measure it until PnL is fee-accurate) and
+the Phase 2 sizing/leverage fixes (it must run inside the exposure budget). It is an <b>incremental edge, not a
+silver bullet</b> — the foundation fixes are what stop the bleeding; this improves the win/loss <i>shape</i>.
+</div>
+
+<h3>3.1 Why center-weighted, and why NOT true martingale</h3>
+<p>The trade DB makes the call unambiguous. The largest realized-loss bucket in <i>every</i> period is price
+<b>trending through the grid</b> while the position accumulates against you:</p>
+<table>
+<tr><th>Dataset</th><th>Dominant loss bucket</th><th>Where profit came from</th></tr>
+<tr><td><code>.old</code> (+359 paper)</td><td><code>drawdown</code> <b>−$33.92</b> (21 cycles)</td><td>a few trends — NEAR +153, ETH +70, TAO +51, ONDO +45</td></tr>
+<tr><td><code>.backup</code> (+60 paper)</td><td><code>timeout</code> −$11.2, <code>spike_close</code> −$10.1, <code>drawdown</code> −$7.7</td><td><code>target_hit</code> +83</td></tr>
+<tr><td>today (−2.8 real)</td><td>one stuck SOL pair <b>−$4.10</b></td><td><code>target_hit</code> +1.25</td></tr>
+</table>
+<table>
+<tr><th></th><th>True martingale (avg-down)</th><th>Anti-martingale (center-weighted) ✅</th></tr>
+<tr><td>Size vs distance</td><td>grows toward edges (more size as price moves against you)</td><td>shrinks toward edges (most size at center)</td></tr>
+<tr><td>Effect on the #1 loss bucket</td><td><b>amplifies</b> <code>drawdown</code>/<code>spike</code> losses</td><td><b>shrinks</b> them (small size at edges)</td></tr>
+<tr><td>Effect on wins</td><td>neutral</td><td>concentrates size where <code>target_hit</code>s cluster (center)</td></tr>
+<tr><td>Failure mode on $93 + leverage</td><td>win small ×N, then one trend = margin wipe (negative EV with an unsurvivable tail)</td><td>smaller edge losses, capital-preserving</td></tr>
+</table>
+<p>The current code’s <code>progressive_sizing</code> actually grows <i>toward the edge</i>
+(<span class="file">grid_engine.py:235-240</span>) — i.e. it is wired as <b>true martingale</b>, just disabled
+(<code>PROGRESSIVE_SIZING_ENABLED=false</code>). This phase <b>inverts</b> it to center-weighted and enables it.</p>
+
+<h3>3.2 <span class="b-high badge">Core change</span> Invert the sizing factor</h3>
+<p><span class="file">grid_engine.py</span>, inside <code>calculate_grid_levels()</code>, the
+<code>elif progressive_sizing_enabled:</code> branch (~line 232-245):</p>
+<pre>                dist = min(dist, 1.0)
+<span class="del">-               # factor climbs from min_factor (near) to max_factor (far)  ← TRUE MARTINGALE</span>
+<span class="del">-               factor = progressive_min_factor + (progressive_max_factor - progressive_min_factor) * (dist ** progressive_curve_power)</span>
+<span class="add">+               # factor DECAYS from max_factor (center) to min_factor (edge)  ← ANTI-MARTINGALE</span>
+<span class="add">+               factor = progressive_max_factor - (progressive_max_factor - progressive_min_factor) * (dist ** progressive_curve_power)</span>
+                factor = max(progressive_min_factor, min(progressive_max_factor, factor))</pre>
+<p>With <code>min=0.6, max=2.0</code>: center level gets 2.0×, edge gets 0.6× the base qty.</p>
+
+<h3>3.3 <span class="b-crit badge">Critical guardrail</span> Keep it budget-neutral (don’t blow the exposure cap)</h3>
+<p>The factors multiply <code>qty_per_level</code>. The Phase 2 exposure cap sizes the base assuming <b>flat</b>
+levels (<code>margin = order_size × num_grids</code>), so a distribution whose factors average &gt; 1.0 will
+<b>silently exceed the per-trade cap</b>. Two acceptable fixes (pick one):</p>
+<ul>
+<li><b>Normalize factors to mean 1.0</b> — after computing all level factors, divide each by their mean so
+<code>Σ factor = num_grids</code>. Total reserved margin is then identical to the flat grid; only the
+<i>distribution</i> changes. (Preferred — keeps the Phase 2 cap math valid untouched.)</li>
+<li><b>Or</b> compute total margin from the actual factor sum and feed that into the exposure cap / deploy gate,
+rejecting the grid if <code>Σ(factor)·order_size &gt; cap</code>.</li>
+</ul>
+<p>Add an assertion + deploy log: <code>effective_total_margin ≤ per_trade_cap</code>. This is the one place a sizing
+strategy can quietly re-introduce the 61%-exposure problem.</p>
+
+<h3>3.4 Wiring &amp; config</h3>
+<ul>
+<li><span class="file">.env</span>: <code>PROGRESSIVE_SIZING_ENABLED=true</code>, <code>PROGRESSIVE_MIN_FACTOR=0.6</code>,
+<code>PROGRESSIVE_MAX_FACTOR=2.0</code>, <code>PROGRESSIVE_CURVE_POWER=1.3</code>.</li>
+<li><span class="file">adaptive_grid.py</span> <code>default_config()</code>: set
+<code>progressive_sizing_enabled / min / max / curve_power</code> from config; keep <code>exp_sizing_gamma=0.0</code>
+when progressive is on (they’re mutually exclusive in <span class="file">grid_engine.py</span>).</li>
+<li><span class="file">token_profiles.json</span>: align the progressive flags in <code>defaults</code> + any per-symbol
+profile (and finish reconciling the config sources per Phase 2.5).</li>
+<li>The values flow through <span class="file">multi_grid_manager.py:2420-2451</span> →
+<code>calculate_grid_levels(progressive_sizing_enabled=…, progressive_min_factor=…, …)</code> — already plumbed.</li>
+</ul>
+
+<h3>3.5 Behavioral guardrails (reuse what exists)</h3>
+<ul>
+<li><b>Per-side fill cap</b>: <span class="file">adaptive_grid.py</span> <code>max_same_side_fills</code> (default 4) —
+keep it low so the grid can’t keep loading one side in a trend. This is the anti-martingale safety that stops
+center-weighting from quietly becoming averaging-down when a trend pins price to one edge.</li>
+<li><b>Spike/trend pause</b>: keep the existing <code>spike_detector</code> (<code>spike_threshold_pct</code>,
+<code>spike_cooldown_sec</code>) active so fills pause during fast moves.</li>
+<li><b>Trend filter at deploy</b>: don’t deploy a symmetric grid into a strong trend (ties to Phase 2.3) — sizing
+can’t save a grid that shouldn’t exist.</li>
+</ul>
+
+<h3>3.6 Validation (gated)</h3>
+<ol class="checks">
+<li>Land Phase 1 + 2.5 first; confirm <code>drift ≈ $0</code> and exposure ≤ cap.</li>
+<li>Run <code>DRY_RUN=true</code> with progressive ON vs OFF for ≥1 week against the now fee-correct simulator;
+compare net PnL, max drawdown, and the <code>drawdown</code>/<code>spike_close</code> loss buckets.</li>
+<li>Acceptance: center-weighted must show <b>lower</b> drawdown-bucket losses and equal-or-better net PnL
+<b>after fees</b>. If not, the rollback is one flag: <code>PROGRESSIVE_SIZING_ENABLED=false</code>.</li>
+<li>Only then enable live, at 5–10× and 5% per-trade margin.</li>
+</ol>
+
+<hr>
+
+<h2>4 · Suggested commit sequence</h2>
+<table>
+<tr><th>#</th><th>Commit</th><th>Files</th></tr>
+<tr><td>1</td><td><code>feat: forward closedPnl+execFee from execution stream</code></td><td>multi_grid_manager.py, live_engine.py</td></tr>
+<tr><td>2</td><td><code>feat: net-of-fee realized PnL from venue truth</code></td><td>live_engine.py, grid_core.py</td></tr>
+<tr><td>3</td><td><code>fix: real per-fill journaling + trades.fee column</code></td><td>multi_grid_manager.py, improvement_loop.py</td></tr>
+<tr><td>4</td><td><code>feat: reconcile wallet to live equity each cycle</code></td><td>multi_grid_manager.py, wallet_tracker.py</td></tr>
+<tr><td>5</td><td><code>chore: reconcile logging + validation script</code></td><td>multi_grid_manager.py, scripts/</td></tr>
+<tr><td>6</td><td><code>fix: enforce per-trade + total exposure caps continuously</code> <span class="b-crit badge">crit</span></td><td>portfolio_risk_monitor.py, multi_grid_manager.py</td></tr>
+<tr><td>7</td><td><code>chore: single config source of truth + sane sizing/leverage</code></td><td>.env, config.py, token_profiles.json, runtime_config.py</td></tr>
+<tr><td>8</td><td><code>fix: grid range / shift-pct clamp (-10701% bug)</code> <span class="b-crit badge">crit</span></td><td>multi_grid_manager.py, adaptive_grid.py</td></tr>
+<tr><td>9+</td><td>Remaining Phase 2 items, one per commit</td><td>(see §2.1, 2.3, 2.4, 2.6–2.8)</td></tr>
+<tr><td>P3</td><td><code>feat: anti-martingale (center-weighted) sizing, budget-neutral</code> — gated, flag-off by default</td><td>grid_engine.py, adaptive_grid.py, token_profiles.json, .env</td></tr>
+</table>
+<p class="tag">Phase 3 ships behind <code>PROGRESSIVE_SIZING_ENABLED</code> (default <b>false</b>) so it can be merged
+without changing live behavior, then enabled only after the dry-run validation in §3.6.</p>
+
+<h2>5 · Rollback</h2>
+<ul>
+<li>All changes are git-tracked (<code>git log --oneline</code>); each phase-1 step is an isolated commit →
+<code>git revert &lt;sha&gt;</code> per step.</li>
+<li>The <code>trades.fee</code> column is additive (default 0.0) — safe to leave even on rollback.</li>
+<li>Behavioral kill-switch independent of these changes: set <code>DRY_RUN=true</code> in <span class="file">.env</span>
+and restart to stop touching the live account while debugging.</li>
+<li>Before deploying live: confirm <code>fetch_open_orders</code> count and <code>fetch_positions</code> match the bot’s
+view; flatten manually on Bybit if an orphan is found (the code has had orphan-position bugs — see comments in
+<code>_flatten_and_cancel</code> / <code>_sync_position_from_exchange</code>).</li>
+</ul>
+
+<div class="panel ok" style="margin-top:28px">
+<b>Bottom line for the implementer:</b> Phase 1 is the whole game — until the bot’s books equal the real Bybit
+account (fees included), every strategy tweak is measured against fiction. Land Phase 1, prove
+<code>drift ≈ $0</code> with the reconciliation log + read-only balance check, <i>then</i> tackle Phase 2 and rebuild
+the container.
+</div>
+
+<p class="tag" style="margin-top:30px">Generated from a live read-only audit of <code>~/.hermes/projects/grid-trader</code> on 2026-05-29.
+All line numbers reference the working tree at that time; re-grep before editing in case the tree has moved.</p>
+
+</div>
+</body>
+</html>

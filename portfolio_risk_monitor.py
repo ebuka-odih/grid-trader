@@ -47,7 +47,7 @@ class PortfolioRiskMonitor:
                 "leverage": MAX_SAFE_LEVERAGE,
                 "max_leverage": MAX_SAFE_LEVERAGE,
                 "max_wallet_exposure_pct": MAX_TRADE_WALLET_EXPOSURE_PCT,
-                "order_size_usdt": MIN_ORDER_SIZE_USDT,
+                "order_size_usdt": BASE_ORDER_SIZE_USDT,
                 "num_grids": 10,
                 "target_pnl_pct": [2.0, 4.0],
             }
@@ -57,7 +57,7 @@ class PortfolioRiskMonitor:
                 "leverage": MAX_SAFE_LEVERAGE,
                 "max_leverage": MAX_SAFE_LEVERAGE,
                 "max_wallet_exposure_pct": MAX_TRADE_WALLET_EXPOSURE_PCT,
-                "order_size_usdt": MIN_ORDER_SIZE_USDT,
+                "order_size_usdt": BASE_ORDER_SIZE_USDT,
                 "num_grids": 10,
             }
             self.portfolio_config = {"max_total_wallet_exposure_pct": 80}

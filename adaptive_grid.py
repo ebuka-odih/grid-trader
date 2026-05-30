@@ -583,38 +583,29 @@ class AdaptiveResult:
 # ── Default Config Factory ─────────────────────────────────────
 
 def default_config() -> AdaptiveConfig:
-    """Return default adaptive grid config tuned for $100 wallet, cross-margin.
-    
-    v3-Lite: Only spike detection + exposure cap active.
-    Recentering, exponential sizing, and trailing disabled after backtest
-    showed they create directional bias or reset grids before positions close.
-    
-    Active features: fast spike detection, exposure cap.
+    """Return default adaptive grid config tuned for $50 wallet, cross-margin.
+
+    v3-Progressive: Progressive sizing enabled for better risk/reward.
+    Positions closer to current price get smaller orders, farther levels get larger.
+
+    Active features: progressive sizing, fast spike detection, exposure cap.
     """
+    from config import (
+        PROGRESSIVE_SIZING_ENABLED, PROGRESSIVE_MIN_FACTOR,
+        PROGRESSIVE_MAX_FACTOR, PROGRESSIVE_CURVE_POWER,
+    )
+
     return AdaptiveConfig(
-        # Recentering DISABLED
         recenter_trigger_pct=100.0,
-        # Trailing DISABLED (was creating one-sided fills)
         trailing_enabled=False,
-        # Exponential sizing DISABLED
         exp_sizing_enabled=False,
-        # Spike detection — fast 10s window.
-        # Threshold tightened from 0.7→0.5 and cooldown extended from 30→60
-        # to catch more cross-symbol candle events. Drawdown closes were
-        # the dominant losing close-reason (avg -$1.93/trade) and 27% of
-        # them clustered in 9 five-minute windows, so the existing
-        # spike-fill-pause has more work to do.
+        progressive_sizing_enabled=PROGRESSIVE_SIZING_ENABLED,
+        progressive_min_factor=PROGRESSIVE_MIN_FACTOR,
+        progressive_max_factor=PROGRESSIVE_MAX_FACTOR,
+        progressive_curve_power=PROGRESSIVE_CURVE_POWER,
         spike_window_sec=float(os.getenv("SPIKE_WINDOW_SEC", "10.0")),
         spike_threshold_pct=float(os.getenv("SPIKE_THRESHOLD_PCT", "0.5")),
         spike_cooldown_sec=float(os.getenv("SPIKE_COOLDOWN_SEC", "60.0")),
-        # Exposure cap — freeze (don't auto-close) on breach.
-        # 4 consecutive same-side fills triggers a freeze: pauses new fills
-        # but lets the position run for the smart-close engine to manage.
-        # Auto-closing on the 3rd fill was too aggressive — closed normal
-        # grid wobble during initial deployment as if it were a real trend.
-        # The hard-floor + scale-out + recovery window handles real
-        # directional moves; the exposure cap just stops the position from
-        # ballooning while smart-close decides.
         max_same_side_fills=4,
         hedge_on_breach=False,
     )

@@ -1163,6 +1163,33 @@ def reset_position(position: GridPosition):
     position.scaled_out = False
 
 
+# ── DCA / Average Entry Merging ──────────────────────────────
+
+def calculate_avg_entry(
+    old_qty: float,
+    old_entry_price: float,
+    new_qty: float,
+    new_entry_price: float,
+) -> Tuple[float, float]:
+    """
+    Merge two entry fills into a weighted average entry price.
+
+    Passivbot-style DCA: when a losing position gets a doubled-size re-entry,
+    the average entry price moves toward current market, shrinking the distance
+    to TP.
+
+    Returns (merged_qty, merged_avg_entry_price).
+    """
+    if old_qty <= 0:
+        return new_qty, new_entry_price
+    if new_qty <= 0:
+        return old_qty, old_entry_price
+    
+    total_qty = old_qty + new_qty
+    avg_price = (old_qty * old_entry_price + new_qty * new_entry_price) / total_qty
+    return total_qty, avg_price
+
+
 def reset_imbalance(imbalance: GridImbalance):
     """Reset imbalance tracker for next cycle."""
     imbalance.buy_fills = 0

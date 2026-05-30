@@ -100,6 +100,10 @@ from config import (
 
     VOLATILITY_SCALE_MIN_FACTOR, VOLATILITY_SCALE_MAX_FACTOR,
 
+    DEFAULT_NUM_GRIDS,
+    DOUBLE_DOWN_ENABLED, DOUBLE_DOWN_FACTOR, DOUBLE_DOWN_MAX_ENTRIES,
+    DOUBLE_DOWN_SPACING_PCT, DOUBLE_DOWN_MIN_LOSS_PCT, DOUBLE_DOWN_MAX_LOSS_PCT,
+
     DRY_RUN,
 
 )
@@ -1927,6 +1931,139 @@ class MultiGridManager:
 
     # ── Deployment Cycle ──────────────────────────────────────
 
+    async def _check_double_down_opportunities(self):
+        """
+        Passivbot-style DCA: detect losing positions and deploy doubled-size
+        re-entry grids to pull average entry price toward current market.
+
+        Only triggers when:
+        - DOUBLE_DOWN_ENABLED is true
+        - Slot has fills and an underwater position
+        - Loss % is between MIN_LOSS_PCT and MAX_LOSS_PCT
+        - Symbol hasn't exceeded DOUBLE_DOWN_MAX_ENTRIES re-entries
+        """
+        if not DOUBLE_DOWN_ENABLED:
+            return
+
+        if not hasattr(self, '_slot_double_down_count'):
+            self._slot_double_down_count: dict[int, int] = {}
+        if not hasattr(self, '_symbol_double_down_cooldown'):
+            self._symbol_double_down_cooldown: dict[str, float] = {}
+
+        now = time.time()
+        wallet_balance = self.wallet_tracker.get_balance()
+
+        for slot_id, slot in list(self.slots.items()):
+            symbol = slot.symbol
+
+            # Cooldown per symbol — don't re-enter the same symbol too fast
+            cooldown_until = self._symbol_double_down_cooldown.get(symbol, 0)
+            if now < cooldown_until:
+                continue
+
+            # Check if this slot has fills and an active position
+            if slot.fills <= 0:
+                continue
+
+            # Get the engine's position state via get_status() dict
+            try:
+                status = slot.engine.get_status()
+            except Exception:
+                continue
+
+            position_side = status.get('position_side', '')
+            position_qty = status.get('position_qty', 0.0)
+            entry_price = status.get('entry_price', 0.0)
+            unrealized_pnl = status.get('unrealized_pnl', 0.0)
+            allocated_margin = status.get('allocated_margin_usdt', 0.0)
+            current_price = status.get('current_price', 0.0)
+            num_grids = status.get('num_grids', DEFAULT_NUM_GRIDS or 8)
+            leverage = status.get('leverage', DEFAULT_LEVERAGE)
+
+            if not position_side or position_qty <= 0 or current_price <= 0:
+                continue
+            if allocated_margin <= 0:
+                continue
+
+            loss_pct = abs(unrealized_pnl) / allocated_margin * 100
+            position_loss = unrealized_pnl < 0
+
+            # Only DCA into LOSING positions within the target band
+            if not position_loss:
+                continue
+            if loss_pct < DOUBLE_DOWN_MIN_LOSS_PCT:
+                continue
+            if loss_pct > DOUBLE_DOWN_MAX_LOSS_PCT:
+                # Too far gone — let SmartCloseEngine handle it
+                continue
+
+            # Check re-entry limit per symbol
+            symbol_reentries = sum(
+                self._slot_double_down_count.get(sid, 0)
+                for sid, s in self.slots.items()
+                if s.symbol == symbol
+            )
+            if symbol_reentries >= DOUBLE_DOWN_MAX_ENTRIES:
+                continue
+
+            # Calculate doubled entry size (progressively larger)
+            reentry_stage = symbol_reentries + 1  # 1st re-entry = stage 1
+            double_factor = DOUBLE_DOWN_FACTOR ** reentry_stage
+            reentry_order_size = slot.adjusted_order_size * double_factor
+
+            # Wider spacing for re-entry (beyond current grid bounds)
+            spacing = current_price * DOUBLE_DOWN_SPACING_PCT / 100.0
+
+            # Deploy new grid in the direction of the position (buy more on longs, sell more on shorts)
+            direction = "long" if position_side == "Buy" else "short"
+
+            # Calculate upper/lower for re-entry grid based on spacing from current price
+            upper = current_price * (1 + spacing / current_price * 2.5)
+            lower = current_price * (1 - spacing / current_price * 2.5)
+
+            logger.info(
+                f"🔻 DOUBLE-DOWN: {symbol} loss={loss_pct:.1f}% "
+                f"reentry=#{reentry_stage} factor={double_factor:.1f}x "
+                f"size=${reentry_order_size:.2f} spacing={spacing:.2f} "
+                f"avg_entry={entry_price:.4f} cur_price={current_price:.4f}"
+            )
+
+            try:
+                from trading_agent import PreTradeDecision
+
+                # Build a synthetic decision for the re-entry
+                reentry_decision = PreTradeDecision(
+                    symbol=symbol,
+                    direction=direction,
+                    confidence=0.6,
+                    upper=upper,
+                    lower=lower,
+                    num_grids=num_grids,
+                    leverage=leverage,
+                    reasoning=f"double-down #{reentry_stage} on {symbol} @ loss {loss_pct:.1f}%",
+                    market_regime="ranging",
+                    narrative=f"DCA re-entry {reentry_stage}/{DOUBLE_DOWN_MAX_ENTRIES} for {symbol}",
+                )
+
+                # Deploy the re-entry grid
+                await self._deploy_grid(
+                    slot.coin_score if hasattr(slot, 'coin_score') else None,
+                    reentry_decision,
+                    token_profile=slot.token_profile,
+                    adjusted_leverage=getattr(slot, 'adjusted_leverage', DEFAULT_LEVERAGE) or DEFAULT_LEVERAGE,
+                    adjusted_order_size=reentry_order_size,
+                )
+
+                # Track the double-down count
+                self._slot_double_down_count[slot_id] = self._slot_double_down_count.get(slot_id, 0) + 1
+
+                # Set cooldown to prevent immediate follow-up re-entries
+                self._symbol_double_down_cooldown[symbol] = now + 120  # 2 minute cooldown
+
+            except Exception as e:
+                logger.error(f"❌ DOUBLE-DOWN failed for {symbol}: {e}", exc_info=True)
+
+
 
 
     async def _deployment_cycle(self):
@@ -2014,6 +2151,10 @@ class MultiGridManager:
             logger.warning(f"💓 Deployment paused {label} for {remaining:.0f}s")
 
             return
+
+        # ── Double-Down Check (runs even when regular slots are full) ────
+        # DCA/re-entry deploys to existing losing positions — independent of slot capacity
+        await self._check_double_down_opportunities()
 
         if free_slots < MIN_FREE_SLOTS_TO_SCAN and len(self.slots) > 0:
 
