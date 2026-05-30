@@ -2501,58 +2501,37 @@ class MultiGridManager:
                 )
 
             else:
-                # ── Single direction or neutral (current behaviour) ──
+                # ── Ranging-only scalp (market awareness) ──
+                # Live data: maker grids only fill+profit on RANGING coins
+                # (~43% fill, the wins). On TRENDING coins they either don't
+                # fill (a buy-dip ladder can't chase an uptrend — 0% fill) or
+                # fight the move and bleed via drawdown stops. So deploy ONLY on
+                # ranging coins; skip trending/volatile entirely. (Trending coins
+                # would need a separate market-entry momentum strategy, not a
+                # maker grid.)
+                if SCALP_MODE_ENABLED and _candidate_market_regime(coin) != "ranging":
+                    continue
+
                 decision = build_scanner_candidate_decision(
                     coin,
                     token_profile=profile,
                     wallet_balance=wallet_balance,
                 )
-                # ── Regime-aware placement (market awareness) ──
-                # A NEUTRAL scalp grid only wins on a RANGING coin. On a trending
-                # coin it fights the move (buys the dump / sells the rip) and
-                # bleeds via drawdown stops — that was the account-bleed source.
-                # So: ranging -> tight neutral scalp band; trending -> keep the
-                # trend-ALIGNED directional decision from classify_grid_style
-                # (long_pullback in an uptrend, short_rebound in a downtrend), so
-                # we ride the trend instead of fighting it.
-                regime = _candidate_market_regime(coin)
-                _dir = (getattr(decision, "direction", "neutral") or "neutral").lower()
+                # Tight neutral scalp band straddling price (fills on small
+                # oscillations, both sides, via maker).
                 if SCALP_MODE_ENABLED and price > 0:
                     hw = SCALP_HALF_WIDTH_PCT / 100.0
                     _dp = max(2, 8 - int(price))
-                    if regime == "ranging" or _dir not in ("long", "short"):
-                        # RANGING → symmetric tight neutral scalp band.
-                        decision.upper = round(price * (1.0 + hw), _dp)
-                        decision.lower = round(price * (1.0 - hw), _dp)
-                        decision.direction = "neutral"
-                        decision.reasoning = (
-                            f"scalp neutral (ranging) ±{SCALP_HALF_WIDTH_PCT:.2f}% @ ${price:.4f}"
-                        )
-                    elif _dir == "long":
-                        # UPTREND → tight band skewed BELOW price: a dense buy
-                        # ladder just under price (fills on small dips → rides up)
-                        # + a thin take-profit zone just above. Near price so it
-                        # fills fast (maker), trend-aligned so it doesn't short
-                        # into the rally.
-                        decision.lower = round(price * (1.0 - 1.6 * hw), _dp)
-                        decision.upper = round(price * (1.0 + 0.4 * hw), _dp)
-                        decision.reasoning = (
-                            f"trend long: buy-dip band @ ${price:.4f} (regime={regime})"
-                        )
-                    else:  # short → DOWNTREND: skew ABOVE price (sell-rip ladder)
-                        decision.lower = round(price * (1.0 - 0.4 * hw), _dp)
-                        decision.upper = round(price * (1.0 + 1.6 * hw), _dp)
-                        decision.reasoning = (
-                            f"trend short: sell-rip band @ ${price:.4f} (regime={regime})"
-                        )
+                    decision.upper = round(price * (1.0 + hw), _dp)
+                    decision.lower = round(price * (1.0 - hw), _dp)
+                    decision.direction = "neutral"
                 direction_label = getattr(decision, "direction", "neutral") or "neutral"
                 decision.reasoning = (
-                    f"Algorithmic pick: style={getattr(coin, 'grid_style', 'unknown')} "
-                    f"deploy_score={getattr(coin, 'deploy_score', score):.3f} score={coin.grid_score:.3f} mr={coin.mean_reversion_score:.2f} "
-                    f"range={coin.range_pct:.1f}% vol=${coin.volume_24h_usdt/1e6:.0f}M"
+                    f"scalp neutral (ranging) ±{SCALP_HALF_WIDTH_PCT:.2f}% @ ${price:.4f} | "
+                    f"mr={coin.mean_reversion_score:.2f} vol=${coin.volume_24h_usdt/1e6:.0f}M"
                 )
                 decision.narrative = (
-                    f"{sector} sector, {decision.market_regime} regime, {coin.atr_pct:.1f}% ATR"
+                    f"{sector} sector, {decision.market_regime} regime — ranging scalp"
                 )
                 picks.append(decision)
                 sector_counts[sector] = current_count + 1
