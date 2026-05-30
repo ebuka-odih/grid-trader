@@ -265,6 +265,10 @@ DUAL_DIRECTION_ENABLED = str(os.getenv("DUAL_DIRECTION_ENABLED", "false")).lower
 # grid spans price·(1±hw); spacing = 2·hw / (num_grids-1).
 SCALP_MODE_ENABLED = str(os.getenv("SCALP_MODE_ENABLED", "true")).lower() in ("1", "true", "yes", "on")
 SCALP_HALF_WIDTH_PCT = float(os.getenv("SCALP_HALF_WIDTH_PCT", "0.9"))
+# Min ATR% to scalp a ranging coin: a coin is "ranging" because it barely moves,
+# but if it's TOO flat (low ATR) price never reaches the grid and it recycles
+# empty (the 73%-no-fill problem). Require enough intra-range oscillation to fill.
+MIN_SCALP_ATR_PCT = float(os.getenv("MIN_SCALP_ATR_PCT", "0.8"))
 
 # Drawdown-cluster deploy gate: when N grids close with reason in
 # {drawdown, spike_close} inside a sliding window, the market is in a
@@ -2510,6 +2514,10 @@ class MultiGridManager:
                 # would need a separate market-entry momentum strategy, not a
                 # maker grid.)
                 if SCALP_MODE_ENABLED and _candidate_market_regime(coin) != "ranging":
+                    continue
+                # Skip ranging coins too flat to fill the grid (raises fill rate /
+                # capital turnover; empties are free but waste a deploy slot-cycle).
+                if SCALP_MODE_ENABLED and float(getattr(coin, "atr_pct", 0.0) or 0.0) < MIN_SCALP_ATR_PCT:
                     continue
 
                 decision = build_scanner_candidate_decision(
