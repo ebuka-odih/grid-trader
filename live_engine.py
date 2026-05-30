@@ -94,6 +94,10 @@ def _smart_close_config_from_env(**overrides) -> SmartCloseConfig:
         tp_tier_3_min=_f("DYNAMIC_TP_TIER_3_MIN", 30.0),
         tp_tier_2_pct=_f("DYNAMIC_TP_TIER_2_PCT", 2.0),
         tp_tier_3_pct=_f("DYNAMIC_TP_TIER_3_PCT", 1.0),
+        tp_trailing_enabled=str(os.getenv("TRAILING_PROFIT_ENABLED", "true")).lower()
+        in ("1", "true", "yes", "on"),
+        tp_trailing_threshold_pct=_f("TRAILING_PROFIT_THRESHOLD_PCT", 0.5),
+        tp_trailing_retracement_pct=_f("TRAILING_PROFIT_RETRACEMENT_PCT", 0.2),
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)

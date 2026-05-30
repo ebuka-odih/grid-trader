@@ -320,6 +320,14 @@ class SmartCloseConfig:
     tp_momentum_trailing_giveback_pct: float = 0.5  # Lock-in giveback above floor
     tp_min_fills: int = 1
 
+    # ── Passivbot-style trailing profit lock-in ──────────────────
+    # Always active (regardless of momentum window). Once profit exceeds
+    # threshold_pct of margin, trail the peak. If price retraces
+    # retracement_pct from the peak, close immediately.
+    tp_trailing_enabled: bool = True
+    tp_trailing_threshold_pct: float = 0.5    # activate trailing after 0.5% profit
+    tp_trailing_retracement_pct: float = 0.2   # close when retraced 0.2% from peak
+
 
 class SmartCloseEngine:
     """
@@ -421,6 +429,26 @@ class SmartCloseEngine:
         # Update peak
         peak = max(self._tp_peak_pct.get(position.side, 0.0), pnl_pct)
         self._tp_peak_pct[position.side] = peak
+
+        # ── Trailing Profit Lock-In (always-on, passivbot-style) ──
+        if cfg.tp_trailing_enabled and pnl_pct >= cfg.tp_trailing_threshold_pct:
+            # Track trailing peak separately from momentum peak
+            if not hasattr(self, '_tp_trailing_peak'):
+                self._tp_trailing_peak: Dict[str, float] = {}
+            trail_peak = max(self._tp_trailing_peak.get(position.side, 0.0), pnl_pct)
+            self._tp_trailing_peak[position.side] = trail_peak
+            retrace = trail_peak - pnl_pct
+            if retrace >= cfg.tp_trailing_retracement_pct:
+                logger.info(
+                    f"🔒 TP TRAILING LOCK ({position.side}): peak={trail_peak:.2f}% "
+                    f"now={pnl_pct:.2f}% retrace={retrace:.2f}% — closing to lock in profit"
+                )
+                self._tp_trailing_peak.pop(position.side, None)
+                return CloseReason.TARGET_HIT
+        else:
+            # Not yet in profit or below threshold — reset trailing peak
+            if hasattr(self, '_tp_trailing_peak'):
+                self._tp_trailing_peak.pop(position.side, None)
 
         # 1. Time-decayed floor (% required to close).
         #    Below full_target_min: full floor target (e.g. 3%).
